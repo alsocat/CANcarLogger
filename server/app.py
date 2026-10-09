@@ -56,6 +56,17 @@ def scan_req(car):
     return scan_requests.setdefault(car, {"at": None})
 
 
+clear_requests = {}
+CLEAR_TTL_S = 300  # an unclaimed clear request is dropped, so it can't fire days later
+
+
+def clear_req(car):
+    r = clear_requests.setdefault(car, {"at": None, "scope": None, "sent": None, "note": None})
+    if r["at"] and not r["sent"] and time.time() - r["at"] > CLEAR_TTL_S:
+        r.update(at=None, scope=None, note="Request expired before the car picked it up")
+    return r
+
+
 # ---------- storage ----------
 
 def db():
@@ -464,6 +475,10 @@ async def upload_health(request: Request):
         c.execute("INSERT INTO health_scans (device_scan_id, car, ts, ts_approx, data, uploaded_at) VALUES (?,?,?,?,?,?)",
                   (scan_id, car, epoch or now, 0 if epoch else 1, json.dumps(data), now))
     scan_req(car).update(at=None, sent=None)
+    if "clear" in data:
+        failed = [r["name"] for r in data["clear"].get("results", []) if not r.get("ok")]
+        clear_req(car).update(at=None, scope=None, sent=None,
+                              note=f"Didn't clear: {', '.join(analysis.MODULE_NAMES.get(n, n) for n in failed)}" if failed else None)
     return {"status": "ok"}
 
 
@@ -553,10 +568,20 @@ async def post_live(request: Request):
     st["data"] = await request.json()
     st["received"] = time.time()
     req = scan_req(car)
+    clr = clear_req(car)
+    note = st["data"].get("clear_note") or ""
+    if clr["sent"] and note.startswith("refused") and clr["at"]:
+        clr.update(at=None, scope=None, note="The car refused: the engine was running. Switch it off (ignition on) and try again.")
+    reply = {"status": "ok"}
     if req["at"] and not req.get("sent"):
         req["sent"] = time.time()
-        return JSONResponse({"status": "ok", "scan": True}, status_code=202)  # board starts a full scan
-    return {"status": "ok"}
+        reply["scan"] = True
+    if clr["at"] and not clr["sent"]:
+        clr["sent"] = time.time()
+        reply["clear"] = clr["scope"]
+    if len(reply) > 1:
+        return JSONResponse(reply, status_code=202)  # board acts on it
+    return reply
 
 
 @app.post("/api/health/scan")
@@ -569,8 +594,32 @@ def request_scan(car: str = ""):
 def scan_status(car):
     st = live_of(car)
     req = scan_req(car)
+    clr = clear_req(car)
     online = st["data"] is not None and time.time() - st["received"] < 10
-    return {"requested_at": req["at"], "sent_at": req.get("sent"), "car_online": online}
+    running = online and (st["data"].get("rpm") or 0) > 0
+    return {"requested_at": req["at"], "sent_at": req.get("sent"), "car_online": online,
+            "engine_running": running,
+            "clear": {"requested_at": clr["at"], "scope": clr["scope"], "sent_at": clr["sent"], "note": clr["note"]}}
+
+
+@app.post("/api/health/clear")
+async def request_clear(request: Request, car: str = ""):
+    """Clear fault codes. Carried out by the board on its next live update,
+    only with the engine off; it then runs a full scan."""
+    car = car_key(car)
+    body = await request.json()
+    scope = body.get("scope")
+    if scope not in ("engine", "all"):
+        raise HTTPException(400, "scope must be engine or all")
+    if body.get("confirm") is not True:
+        raise HTTPException(400, "not confirmed")
+    status = scan_status(car)
+    if not status["car_online"]:
+        raise HTTPException(409, "The car isn't connected. Switch the ignition on near home WiFi.")
+    if status["engine_running"]:
+        raise HTTPException(409, "Switch the engine off first (leave the ignition on).")
+    clear_req(car).update(at=time.time(), scope=scope, sent=None, note=None)
+    return scan_status(car)
 
 
 @app.get("/api/cars")

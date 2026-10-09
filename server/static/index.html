@@ -75,7 +75,7 @@
   </section>
 
   <section class="card" id="healthCard">
-    <div class="card-head"><h2>Car health</h2><div class="head-actions"><span class="muted small" id="healthWhen"></span><button class="btn ghost small-btn" id="scanBtn" type="button">Scan now</button></div></div>
+    <div class="card-head"><h2>Car health</h2><div class="head-actions"><span class="muted small" id="healthWhen"></span><button class="btn ghost small-btn" id="clearBtn" type="button">Clear codes…</button><button class="btn ghost small-btn" id="scanBtn" type="button">Scan now</button></div></div>
     <div id="health"><p class="muted small">No scan yet. Switch the ignition on, or click Scan now while the car is on.</p></div>
   </section>
 
@@ -188,6 +188,27 @@
   </div>
   <div class="td-stats" id="tdStats"></div>
   <div class="td-charts" id="tdCharts"></div>
+</dialog>
+
+<dialog id="clearDlg" class="dlg">
+  <div class="dlg-head"><div><h2>Clear fault codes</h2><div class="muted small">Ignition on, engine off. Takes about 30 seconds.</div></div><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+  <form id="cdForm" class="set-form">
+    <div class="choice">
+      <label class="check"><input type="radio" name="scope" value="engine" checked> Engine only (check engine light)</label>
+      <label class="check"><input type="radio" name="scope" value="all"> All modules the logger reads (engine, ABS, airbag, climate…)</label>
+    </div>
+    <div class="warn-box">
+      <b>Before you clear</b>
+      <ul>
+        <li>Clearing turns the light off but doesn't fix anything. A fault that's still there comes back, often within a drive.</li>
+        <li>Emissions readiness resets. The car fails a smog or emissions test until it's been driven normally for a few days, usually 50–100 miles.</li>
+        <li>The record of when each fault happened is erased. Note the codes first if you'll want them.</li>
+      </ul>
+    </div>
+    <label class="check"><input type="checkbox" name="ok" id="cdOk" required> I understand, clear the codes</label>
+    <p class="small" id="cdStatus" role="status"></p>
+    <div class="dlg-foot"><button class="btn ghost" type="button" data-close>Cancel</button><button class="btn danger" type="submit" id="cdGo">Clear codes</button></div>
+  </form>
 </dialog>
 
 <dialog id="fillDlg" class="dlg">

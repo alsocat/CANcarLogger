@@ -395,9 +395,37 @@ function renderScanBtn(r) {
 }
 $("scanBtn").onclick = async () => renderScanBtn(await api("/api/health/scan", { method: "POST" }));
 
+// ---------- clearing codes ----------
+function renderClear(r) {
+  const c = r.clear || {};
+  const b = $("clearBtn");
+  const busy = !!c.requested_at;
+  b.disabled = busy || !r.car_online || r.engine_running;
+  b.textContent = busy ? (c.sent_at ? "Clearing…" : "Waiting for car…") : "Clear codes…";
+  b.title = !r.car_online ? "The car needs to be on and on home WiFi"
+    : r.engine_running ? "Switch the engine off first (leave the ignition on)" : "Erase stored fault codes";
+  $("cdStatus").textContent = c.note || "";
+  if (busy) { clearTimeout(renderScanBtn.timer); renderScanBtn.timer = setTimeout(loadHealth, 3000); }
+}
+$("clearBtn").onclick = () => { $("cdForm").reset(); $("cdStatus").textContent = ""; $("clearDlg").showModal(); };
+$("cdForm").onsubmit = async e => {
+  e.preventDefault();
+  const scope = new FormData($("cdForm")).get("scope");
+  $("cdGo").disabled = true;
+  try {
+    const r = await fetch("/api/health/clear", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, confirm: $("cdOk").checked }) });
+    const body = await r.json();
+    if (!r.ok) { $("cdStatus").textContent = body.detail || "Couldn't send the request."; return; }
+    $("clearDlg").close();
+    renderClear(body);
+  } finally { $("cdGo").disabled = false; }
+};
+
 async function loadHealth() {
   const h = await api("/api/health");
   renderScanBtn(h.request);
+  renderClear(h.request);
   if (!h.latest) return;
   const L = h.latest;
   $("healthWhen").textContent = `scanned ${L.ts_approx ? "≈ " : ""}${fmt.when(L.ts)}${L.odometer_mi ? " · " + Math.round(L.odometer_mi).toLocaleString() + " mi" : ""}`;
@@ -419,7 +447,11 @@ async function loadHealth() {
   const cleared = h.cleared.length ? `<details><summary>${h.cleared.length} code${h.cleared.length === 1 ? "" : "s"} seen before but gone now</summary><div class="codes">${
     h.cleared.map(c => `<div class="code"><b>${c.code}</b><span>${c.text ? esc(c.text) : `<a href="${lookup(c.code)}" target="_blank" rel="noopener">Look up</a>`}</span><span></span>
       <span class="meta">${esc(c.module)} · last seen ${fmt.date(c.last_ts)}</span></div>`).join("")}</div></details>` : "";
-  $("health").innerHTML = `<div class="health-top">${top}<span class="muted small">${h.scans} scan${h.scans === 1 ? "" : "s"} so far · full scan every 20 starts or 300 mi, or when engine codes change</span></div>
+  const clr = L.clear ? `<p class="small clear-line">Codes were cleared just before this scan: ${
+    L.clear.map(r => `${esc(r.label)} ${r.ok ? "✓" : "✗ didn't clear"}`).join(" · ")}${
+    codes.length ? ". The codes shown came back right away, so the fault is still there." : "."}</p>` : "";
+  const note = h.request.clear && h.request.clear.note ? `<p class="small warn-text">${esc(h.request.clear.note)}</p>` : "";
+  $("health").innerHTML = `${clr}${note}<div class="health-top">${top}<span class="muted small">${h.scans} scan${h.scans === 1 ? "" : "s"} so far · full scan every 20 starts or 300 mi, or when engine codes change</span></div>
     <div class="modules">${modules}</div>${codeList ? `<div class="codes">${codeList}</div>` : ""}${mis}${cleared}`;
 }
 

@@ -81,8 +81,12 @@ extern std::atomic<bool> uploading;
 extern std::atomic<int> pending_trips;  // finished trips not yet on the server
 void led_start();
 
-// Set by the uploader when the dashboard asks for a full health scan.
+// Set by the uploader when the dashboard asks for a full health scan, or to
+// clear fault codes (only carried out with the engine off).
 extern std::atomic<bool> scan_requested;
+#define CLEAR_ENGINE 1  // OBD mode 04 to the engine (and transmission on non-VW)
+#define CLEAR_ALL 2     // VW: UDS 14 FF FF FF to every module as well
+extern std::atomic<int> clear_requested;
 const char *health_note();  // what the last ignition-on health check decided
 
 // Power (power.cpp)

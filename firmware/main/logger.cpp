@@ -45,6 +45,8 @@ uint32_t g_boot_id = 0;
 #define SCAN_EVERY_KM 480  // ~300 mi
 
 std::atomic<bool> scan_requested{false};
+std::atomic<int> clear_requested{0};
+static char clear_buf[96] = "";  // outcome of the last clear request, for the live view
 static char health_buf[96] = "no check yet";
 
 const char *health_note()
@@ -447,7 +449,7 @@ static void append_hex(std::string &s, const uint8_t *b, int n)
     }
 }
 
-static void health_scan()
+static void health_scan(const std::string &extra = "")
 {
     static uint8_t b[640];
     std::string js = "{\"modules\":[";
@@ -509,6 +511,12 @@ static void health_scan()
     char tail[80];
     snprintf(tail, sizeof(tail), "],\"odo_km\":%lu,\"vin\":\"%s\"}", (unsigned long)live.odo_km, vin);
     js += tail;
+    if (!extra.empty()) {  // "...}" -> "...,<extra>}"
+        js.pop_back();
+        js += ",";
+        js += extra;
+        js += "}";
+    }
 
     make_room();
     TripHeader h = {};
@@ -531,6 +539,72 @@ static void health_scan()
     }
     ESP_LOGI(TAG, "health scan: %u bytes in %lld ms", (unsigned)js.size(),
              (long long)(esp_timer_get_time() - t0) / 1000);
+}
+
+// ---------- clearing fault codes ----------
+// Only on request from the dashboard, with the ignition on and the engine
+// off. Engine (and transmission on other makes): OBD mode 04. "All" on a VW
+// also sends UDS ClearDiagnosticInformation (14 FF FF FF) to each module, in
+// the extended session. Returns a JSON fragment with what each one said.
+
+static std::string clear_codes(int scope)
+{
+    static uint8_t b[64];
+    std::string js = "\"clear\":{\"scope\":\"";
+    js += scope == CLEAR_ALL ? "all" : "engine";
+    js += "\",\"results\":[";
+    bool first = true;
+    auto result = [&](const char *name, int n, uint8_t ok_sid) {
+        js += first ? "{" : ",{";
+        first = false;
+        js += "\"name\":\"";
+        js += name;
+        js += "\",\"ok\":";
+        js += n > 0 && b[0] == ok_sid ? "true" : "false";
+        js += ",\"resp\":\"";
+        append_hex(js, b, n > 0 ? (n > 8 ? 8 : n) : 0);
+        js += "\"}";
+    };
+    int n = ecu("04", b, sizeof(b), 3000);
+    result("engine", n, 0x44);
+    if (!is_vw) {
+        n = ecu("04", b, sizeof(b), 3000, 0x7E1, 0x7E9);
+        if (n > 0) {
+            result("trans", n, 0x44);
+        }
+    } else if (scope == CLEAR_ALL) {
+        for (const Module &m : MODULES) {
+            if (m.tx == 0x7E0) {
+                continue;  // done above
+            }
+            ecu("1003", b, sizeof(b), 1000, m.tx, m.rx);
+            n = ecu("14FFFFFF", b, sizeof(b), 5000, m.tx, m.rx);
+            result(m.name, n, 0x54);
+        }
+    }
+    js += "]}";
+    ESP_LOGW(TAG, "cleared codes: %s", js.c_str());
+    return js;
+}
+
+static void handle_clear_request(bool engine_running)
+{
+    int scope = clear_requested.exchange(0);
+    if (!scope) {
+        return;
+    }
+    unsigned up = esp_timer_get_time() / 1000000;
+    if (engine_running) {
+        snprintf(clear_buf, sizeof(clear_buf), "refused at %us: engine running", up);
+        return;
+    }
+    snprintf(clear_buf, sizeof(clear_buf), "clearing at %us", up);
+    std::string res = clear_codes(scope);
+    snprintf(clear_buf, sizeof(clear_buf), "cleared at %us, scanning", up);
+    snprintf(health_buf, sizeof(health_buf), "full scan at %us (after clearing codes)", up);
+    vTaskDelay(pdMS_TO_TICKS(2000));  // let modules settle before reading them back
+    health_scan(res);
+    snprintf(clear_buf, sizeof(clear_buf), "cleared at %us", up);
 }
 
 // Every ignition-on: a quick look at the engine's MIL / DTC count (one
@@ -705,14 +779,14 @@ bool logger_live_json(char *out, size_t len)
              "\"abs_load\":%.1f,\"lambda\":%.3f,\"stft\":%.1f,\"ltft\":%.1f,\"timing\":%.1f,"
              "\"fuel_level\":%.1f,\"ambient_c\":%d,\"voltage\":%.2f,\"cat_c\":%.0f,"
              "\"fuel_status\":%u,\"fuel_rate_ml_s_per_l\":%.4f,\"trip_dist_m\":%.0f,"
-             "\"trip_fuel_ml_per_l\":%.2f,\"odo_km\":%lu,\"maf\":%.2f,\"fuel_abs\":%d,\"vin\":\"%s\"}",
+             "\"trip_fuel_ml_per_l\":%.2f,\"odo_km\":%lu,\"maf\":%.2f,\"fuel_abs\":%d,\"vin\":\"%s\",\"clear_note\":\"%s\"}",
              logger_state(), r.rpm, r.speed_kph, r.coolant - 40, r.iat - 40, r.map_kpa, r.baro_kpa,
              r.throttle * 100 / 255.0, r.pedal * 100 / 255.0, r.load * 100 / 255.0,
              r.abs_load * 100 / 255.0, r.lambda * 2 / 65536.0, (r.stft - 128) * 100 / 128.0,
              (r.ltft - 128) * 100 / 128.0, r.timing / 2.0 - 64, r.fuel_level * 100 / 255.0, r.ambient - 40,
              r.voltage_mv / 1000.0, r.cat_temp / 10.0 - 40, r.fuel_status, rate,
              state == ST_TRIP ? dist_m : 0, state == ST_TRIP ? fuel_ml : 0, (unsigned long)r.odo_km, live_maf,
-             supported(0x10) ? 1 : 0, vin);
+             supported(0x10) ? 1 : 0, vin, clear_buf);
     return true;
 }
 
@@ -782,6 +856,7 @@ static void logger_task(void *)
             }
             if (awake) {
                 last_awake_us = esp_timer_get_time();
+                handle_clear_request(live.rpm > 0);
                 bool forced = scan_requested.exchange(false);
                 if (!scanned || forced) {
                     query_odo();
@@ -813,6 +888,9 @@ static void logger_task(void *)
             continue;
         }
 
+        if (clear_requested.load()) {
+            handle_clear_request(true);  // refused: never while the engine runs
+        }
         // Fast group every loop: rpm, speed, abs load, lambda, fuel status, pedal
         uint16_t prev_speed = live.speed_kph;
         if (query(grp_fast) > 0) {

@@ -74,19 +74,34 @@ static esp_http_client_handle_t make_client(const char *path, int timeout_ms)
     return c;
 }
 
+// The server answers 202 when the dashboard wants something from the car:
+// {"scan": true} for "Scan now", {"clear": "engine"|"all"} for "Clear codes".
 static void post_live()
 {
-    static char json[768];
+    static char json[1024];
     if (!logger_live_json(json, sizeof(json))) {
         return;
     }
     esp_http_client_handle_t c = make_client("/api/live", 2000);
     esp_http_client_set_header(c, "Content-Type", "application/json");
-    esp_http_client_set_post_field(c, json, strlen(json));
-    if (esp_http_client_perform(c) != ESP_OK) {
+    int len = strlen(json);
+    if (esp_http_client_open(c, len) != ESP_OK || esp_http_client_write(c, json, len) != len) {
         resolved_at_us = 0;  // re-resolve next time in case the server moved
-    } else if (esp_http_client_get_status_code(c) == 202) {
-        scan_requested.store(true);  // dashboard clicked "Scan now"
+        esp_http_client_cleanup(c);
+        return;
+    }
+    esp_http_client_fetch_headers(c);
+    if (esp_http_client_get_status_code(c) == 202) {
+        char resp[160] = {};
+        esp_http_client_read(c, resp, sizeof(resp) - 1);
+        if (strstr(resp, "\"scan\":true")) {
+            scan_requested.store(true);
+        }
+        if (strstr(resp, "\"clear\":\"engine\"")) {
+            clear_requested.store(CLEAR_ENGINE);
+        } else if (strstr(resp, "\"clear\":\"all\"")) {
+            clear_requested.store(CLEAR_ALL);
+        }
     }
     esp_http_client_cleanup(c);
 }

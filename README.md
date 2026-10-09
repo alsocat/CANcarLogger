@@ -28,6 +28,10 @@ tools/      vwprobe.py: read-only explorer for VW module data over /uds
   every 20 starts, 300 miles, when that changes, or on demand. On VWs this
   reads every module (UDS 19 02); on other makes it reads OBD modes 03/07/0A
   from the engine and transmission plus misfire counters (mode 06).
+- **Clear codes** from the dashboard, after a confirmation that explains what
+  it resets. Engine only (OBD mode 04) or every module (VW: UDS 14 FF FF FF).
+  The board only does it with the ignition on and the engine off, an unclaimed
+  request expires after 5 minutes, and a full scan runs right after.
 - **Vitals page**: live gauges at 2 Hz.
 - **Maintenance log** with a printable service history.
 - **Gears** learned from rpm/speed, performance runs, VW odometer via UDS.
