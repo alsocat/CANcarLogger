@@ -1,0 +1,12 @@
+[Unit]
+Description=carlog car telemetry server
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/carlog.env
+WorkingDirectory=/opt/carlog
+ExecStart=/opt/carlog/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

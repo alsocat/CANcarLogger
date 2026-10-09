@@ -1,0 +1,4 @@
+dependencies:
+  espressif/mdns: "*"
+  joltwallet/littlefs: "*"
+  espressif/led_strip: "^3"

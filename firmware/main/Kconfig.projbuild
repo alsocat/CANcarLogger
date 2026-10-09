@@ -1,0 +1,41 @@
+menu "OBD WiFi Bridge"
+    config OBD_AP_SSID
+        string "Access point SSID"
+        default "OBD-ESP32"
+    config OBD_AP_PASS
+        string "Access point password (8+ chars)"
+        default "changeme123"
+    config OBD_STA_SSID
+        string "Home WiFi SSID (leave empty to run as access point)"
+        default ""
+    config OBD_STA_PASS
+        string "Home WiFi password"
+        default ""
+    config OBD_OTA_TOKEN
+        string "Token required for OTA uploads (empty = no check)"
+        default ""
+    config OBD_SERVER_HOST
+        string "carlog server host (.local names are resolved with mDNS)"
+        default "carlog.local"
+    config OBD_SERVER_PORT
+        int "carlog server port"
+        default 8080
+    config OBD_SERVER_TOKEN
+        string "Token sent to the carlog server"
+        default ""
+    config OBD_SLEEP
+        bool "Deep sleep while the car is off (board on always-on OBD power)"
+        default y
+    config OBD_VBAT_GPIO
+        int "GPIO with the battery voltage divider (ADC1: 1-10, -1 = none)"
+        default 1
+    config OBD_VBAT_RATIO_X1000
+        int "Divider ratio x1000 (1 MOhm over 220 kOhm = 5545)"
+        default 5545
+    config OBD_WAKE_VOLTS_X10
+        int "Battery volts x10 that mean the engine is running"
+        default 130
+    config OBD_SLEEP_CHECK_S
+        int "Seconds between battery checks while asleep"
+        default 20
+endmenu

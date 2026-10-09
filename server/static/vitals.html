@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car vitals</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M4 20a12 12 0 0 1 24 0' fill='none' stroke='%233987e5' stroke-width='4' stroke-linecap='round'/><path d='M16 20l6-7' stroke='%23d95926' stroke-width='3' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .gauges .card { display: flex; flex-direction: column; align-items: center; padding-bottom: 8px; }
+  .gauges .gauge-wrap { width: 100%; max-width: 260px; }
+  .gauges .eyebrow { align-self: flex-start; }
+  .vitals { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .vital { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .vital .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .vital .v { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .vital .u { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin-left: 3px; }
+  .vital .sub { font-size: 12px; color: var(--text-muted); min-height: 17px; }
+  .vital svg.spark { width: 100%; height: 34px; display: block; margin-top: 6px; }
+  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+  .status i { width: 14px; height: 14px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 10px; font-weight: 800; color: #fff; }
+  .status.good i { background: var(--good); }
+  .status.warning i { background: var(--warning); color: #111; }
+  .status.critical i { background: var(--critical); }
+  .status.info i { background: var(--text-muted); }
+  .vital.critical { border-color: var(--critical); }
+  .vital.warning { border-color: var(--warning); }
+  .bars { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .bars .bar-kv { border: 0; padding: 0; }
+  .bars .meter { max-width: none; }
+  .bars b { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+  .offline { text-align: center; padding: 48px 16px; }
+  .offline h2 { justify-content: center; font-size: 18px; margin-bottom: 6px; }
+  a.back { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+  a.back:hover { color: var(--text-primary); }
+  @media (max-width: 720px) {
+    .gauges { gap: 8px; }
+    .gauges .card { padding: 12px 8px 4px; }
+    .gauges .eyebrow { font-size: 10px; }
+    .vitals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .vital .v { font-size: 24px; }
+  }
+  @media (max-width: 380px) { .vitals { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><path d="M4 22a12 12 0 0 1 24 0" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/><path d="M16 22l6-7" stroke="var(--series-2)" stroke-width="3" stroke-linecap="round"/></svg>
+      <div>
+        <div class="car-name" id="carName">Vitals</div>
+        <a class="back" href="/">← Dashboard</a>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">connecting…</span></span>
+    </div>
+  </header>
+
+  <section class="card offline" id="offline" hidden>
+    <h2>Car not connected</h2>
+    <p class="muted" id="offlineText">Vitals appear when the ignition is on and the car is on home WiFi.</p>
+  </section>
+
+  <div id="liveArea" hidden>
+    <section class="gauges">
+      <div class="card"><div class="eyebrow">Speed</div><div class="gauge-wrap" id="gSpeed"></div></div>
+      <div class="card"><div class="eyebrow">Engine speed</div><div class="gauge-wrap" id="gRpm"></div></div>
+      <div class="card"><div class="eyebrow">Boost</div><div class="gauge-wrap" id="gBoost"></div></div>
+    </section>
+    <section class="vitals" id="vitals" style="margin-top:16px"></section>
+  </div>
+</div>
+<div class="tooltip" id="tooltip" hidden></div>
+<script src="/static/car.js"></script>
+<script src="/static/charts.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+try { const t = localStorage.getItem("carlog-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+
+const gSpeed = Charts.gauge($("gSpeed"), { min: 0, max: 160, unit: "mph" });
+const gRpm = Charts.gauge($("gRpm"), { min: 0, max: 7000, unit: "rpm", redline: 6500, fmt: v => Math.round(v / 10) * 10 });
+const gBoost = Charts.gauge($("gBoost"), { min: -15, max: 25, unit: "psi", fmt: v => (v > 0 ? "+" : "") + v.toFixed(1) });
+
+// ---- status rules: each returns [level, label] or null ----
+const S = (level, label) => [level, label];
+const rules = {
+  battery: (v, l) => v == null ? null : l.rpm > 0
+    ? v < 12.8 ? S("critical", "Not charging") : v < 13.2 ? S("warning", "Low charge") : v > 15 ? S("critical", "Overcharging") : S("good", "Charging")
+    : v < 12.0 ? S("critical", "Low") : v < 12.4 ? S("warning", "Partial") : S("good", "Healthy"),
+  coolant: v => v == null ? null : v > 245 ? S("critical", "Overheating") : v > 230 ? S("warning", "Hot")
+    : v < 140 ? S("info", "Warming up") : S("good", "Normal"),
+  iat: v => v == null ? null : v > 150 ? S("warning", "Heat soak") : null,
+  fuel: v => v == null ? null : v < 12 ? S("critical", "Low fuel") : v < 25 ? S("warning", "Getting low") : null,
+  trims: (_, l) => {
+    const t = Math.abs((l.stft ?? 0) + (l.ltft ?? 0));
+    return l.rpm > 0 ? t > 25 ? S("critical", "Way off") : t > 15 ? S("warning", "Drifting") : S("good", "Normal") : null;
+  },
+  cat: v => v == null ? null : v > 1650 ? S("critical", "Very hot") : null,
+  mil: () => !health ? null : health.mil ? S("critical", "Light on") : health.count ? S("warning", "Codes stored") : S("good", "All clear"),
+};
+const ICON = { good: "✓", warning: "!", critical: "!", info: "i" };
+
+// ---- tiles ----
+let health = null;  // latest scan from /api/health
+const tiles = [
+  { id: "gear", label: "Gear", unit: "", get: l => l.gear, fmt: v => v,
+    sub: l => l.gear ? "" : l.rpm > 0 && l.mph > 3 ? "clutch in / between gears" : "" },
+  { id: "mil", label: "Check engine", unit: "", get: () => health ? (health.mil ? "ON" : "Off") : null, fmt: v => v,
+    sub: () => health ? `${health.count} fault code${health.count === 1 ? "" : "s"} at last scan` : "no scan yet" },
+  { id: "battery", label: "Battery", unit: "V", get: l => l.voltage || null, fmt: v => v.toFixed(1), spark: true,
+    sub: l => l.rpm > 0 ? "alternator output" : "resting voltage" },
+  { id: "coolant", label: "Coolant", unit: "°F", get: l => l.coolant_f, fmt: Math.round, spark: true },
+  { id: "iat", label: "Intake air", unit: "°F", get: l => l.iat_f, fmt: Math.round, spark: true,
+    sub: l => l.ambient_f != null ? `${Math.round(l.ambient_f)}°F outside` : "" },
+  { id: "fuel", label: "Fuel level", unit: "%", get: l => l.fuel_level || null, fmt: Math.round,
+    sub: l => l.fuel_level ? `≈ ${(l.fuel_level / 100 * l.tank_gal).toFixed(1)} gal${range(l)}` : "" },
+  { id: "odo", label: "Odometer", unit: "mi", get: l => l.odometer_mi, fmt: v => Math.round(v).toLocaleString(),
+    sub: l => l.trip_miles > 0 ? `${l.trip_miles.toFixed(1)} mi this trip` : "" },
+  { id: "gph", label: "Fuel flow", unit: "gal/h", get: l => l.rpm > 0 ? l.gph : null, fmt: v => v.toFixed(2), spark: true,
+    sub: l => l.instant_mpg != null ? `${Math.min(l.instant_mpg, 99).toFixed(1)} mpg right now` : l.trip_mpg ? `${l.trip_mpg.toFixed(1)} mpg this trip` : "" },
+  { id: "trims", label: "Fuel trims", unit: "%", get: l => l.rpm > 0 ? l.ltft + l.stft : null, fmt: v => (v >= 0 ? "+" : "") + v.toFixed(0),
+    sub: l => `short ${sign(l.stft)}% · long ${sign(l.ltft)}%`, spark: true },
+  { id: "afr", label: "Air / fuel", unit: "AFR", get: l => l.rpm > 0 && l.lambda ? l.lambda * 14.7 : null, fmt: v => v.toFixed(1),
+    sub: l => l.fuel_status || "", spark: true },
+  { id: "timing", label: "Ignition timing", unit: "°", get: l => l.rpm > 0 ? l.timing : null, fmt: v => v.toFixed(1), spark: true,
+    sub: () => "advance before TDC" },
+  { id: "cat", label: "Catalyst", unit: "°F", get: l => l.cat_f, fmt: Math.round },
+  { id: "alt", label: "Altitude", unit: "ft", get: l => l.baro_kpa ? 145366.45 * (1 - (l.baro_kpa / 101.325) ** 0.190284) : null,
+    fmt: v => (Math.round(v / 50) * 50).toLocaleString(), sub: l => l.baro_kpa ? `from barometer · ${l.baro_kpa} kPa` : "" },
+  { id: "inputs", label: "Driver & engine", bars: [["Pedal", "pedal"], ["Throttle", "throttle"], ["Load", "load"]] },
+];
+const sign = v => v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(0);
+let avgMpg = null;
+const range = l => avgMpg ? ` · ~${Math.round(l.fuel_level / 100 * l.tank_gal * avgMpg)} mi range` : "";
+
+const HIST = 240;  // 2 minutes at 2 Hz
+const hist = Object.fromEntries(tiles.map(t => [t.id, []]));
+$("vitals").innerHTML = tiles.map(t => t.bars
+  ? `<div class="vital" id="t-${t.id}"><div class="eyebrow">${t.label}</div><div class="bars">${t.bars.map(([lab, k]) =>
+      `<div class="bar-kv"><span>${lab}</span><div class="meter"><i data-k="${k}"></i></div><b data-v="${k}">—</b></div>`).join("")}</div></div>`
+  : `<div class="vital" id="t-${t.id}"><div class="row"><div class="eyebrow">${t.label}</div><span class="status" data-status></span></div>
+      <div><span class="v" data-v>—</span><span class="u">${t.unit}</span></div><div class="sub" data-sub></div>
+      ${t.spark ? `<svg class="spark" viewBox="0 0 ${HIST} 34" preserveAspectRatio="none" aria-hidden="true"><path fill="none" stroke="var(--series-1)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>` : ""}</div>`).join("");
+
+function spark(svg, data) {
+  const vals = data.filter(v => v != null);
+  if (vals.length < 2) { svg.firstElementChild.setAttribute("d", ""); return; }
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
+  const dx = HIST / Math.max(data.length - 1, 1);  // stretch until the window fills
+  let d = "", pen = false;
+  data.forEach((v, i) => {
+    if (v == null) { pen = false; return; }
+    const y = 31 - (v - lo) / (hi - lo) * 28;
+    d += `${pen ? "L" : "M"}${(i * dx).toFixed(1)},${y.toFixed(1)}`;
+    pen = true;
+  });
+  svg.firstElementChild.setAttribute("d", d);
+}
+
+function renderTiles(l) {
+  for (const t of tiles) {
+    const root = $(`t-${t.id}`);
+    if (t.bars) {
+      for (const [, k] of t.bars) {
+        root.querySelector(`[data-k=${k}]`).style.width = (l[k] ?? 0) + "%";
+        root.querySelector(`[data-v=${k}]`).textContent = l[k] == null ? "—" : Math.round(l[k]) + "%";
+      }
+      continue;
+    }
+    const v = t.get(l);
+    root.querySelector("[data-v]").textContent = v == null || Number.isNaN(v) ? "—" : t.fmt(v);
+    root.querySelector("[data-sub]").textContent = t.sub ? t.sub(l) : "";
+    const st = rules[t.id] ? rules[t.id](v, l) : null;
+    const chip = root.querySelector("[data-status]");
+    chip.className = "status" + (st ? " " + st[0] : "");
+    chip.innerHTML = st ? `<i aria-hidden="true">${ICON[st[0]]}</i>${st[1]}` : "";
+    root.classList.toggle("critical", st?.[0] === "critical");
+    root.classList.toggle("warning", st?.[0] === "warning");
+    if (t.spark) {
+      const h = hist[t.id];
+      h.push(v);
+      if (h.length > HIST) h.shift();
+      spark(root.querySelector("svg.spark"), h);
+    }
+  }
+}
+
+function ago(s) {
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
+async function poll() {
+  try {
+    const l = await fetch("/api/live").then(r => r.json());
+    $("statusPill").classList.toggle("on", l.online);
+    $("offline").hidden = l.online;
+    $("liveArea").hidden = !l.online;
+    if (!l.online) {
+      $("statusText").textContent = l.age_s != null ? `seen ${ago(l.age_s)}` : "car offline";
+      return;
+    }
+    $("statusText").textContent = l.state === "recording" ? "engine running · live"
+      : l.state === "engine off" ? "ignition on · engine off" : l.state;
+    const running = l.rpm > 0;
+    gSpeed(l.mph);
+    gRpm(l.rpm);
+    gBoost(running ? l.boost_psi : null);
+    renderTiles(l);
+  } catch {
+    $("statusText").textContent = "server unreachable";
+  }
+}
+
+fetch("/api/summary").then(r => r.json()).then(s => {
+  $("carName").textContent = `${s.settings.car_name} vitals`;
+  document.title = `${s.settings.car_name} · vitals`;
+  avgMpg = s.last30.mpg ?? s.lifetime.mpg;
+}).catch(() => {});
+async function loadHealth() {
+  try {
+    const h = await fetch("/api/health").then(r => r.json());
+    if (h.latest) health = { mil: h.latest.mil, count: h.latest.modules.reduce((a, m) => a + m.codes.length, 0) };
+  } catch {}
+}
+loadHealth();
+setInterval(loadHealth, 60000);
+poll();
+setInterval(poll, 500);
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+# WiFi credentials and OTA token live in secrets.defaults (keep it out of git)
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/secrets.defaults")
+    set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;secrets.defaults")
+endif()
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(obd_wifi_bridge)

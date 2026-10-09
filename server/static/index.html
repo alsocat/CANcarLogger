@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>carlog</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M4 20a12 12 0 0 1 24 0' fill='none' stroke='%233987e5' stroke-width='4' stroke-linecap='round'/><path d='M16 20l6-7' stroke='%23d95926' stroke-width='3' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><path d="M4 22a12 12 0 0 1 24 0" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/><path d="M16 22l6-7" stroke="var(--series-2)" stroke-width="3" stroke-linecap="round"/></svg>
+      <div>
+        <div class="car-name" id="carName">carlog</div>
+        <div class="muted small" id="carSub">fuel economy &amp; telemetry</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <select id="carPick" class="car-pick" aria-label="Car" hidden></select>
+      <a class="btn ghost small-btn" href="/vitals">Vitals</a>
+      <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">connecting…</span></span>
+      <button class="icon-btn" id="themeBtn" title="Toggle light/dark" aria-label="Toggle light/dark">
+        <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="currentColor"/></svg>
+      </button>
+      <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Live view: only shown while the car is streaming -->
+  <section class="card live" id="live" hidden>
+    <div class="card-head">
+      <h2><span class="live-dot"></span>Live</h2>
+      <a class="muted small" href="/vitals">Full vitals →</a>
+    </div>
+    <div class="live-grid">
+      <div class="gauge-wrap" id="gSpeed"></div>
+      <div class="gauge-wrap" id="gRpm"></div>
+      <div class="live-mpg">
+        <div class="eyebrow">Instant</div>
+        <div class="hero-num" id="lInstant">—</div>
+        <div class="muted">mpg</div>
+        <div class="live-trip"><span class="muted">This trip</span> <b id="lTripMpg">—</b> mpg · <b id="lTripMi">0.0</b> mi</div>
+      </div>
+      <div class="live-stats">
+        <div class="kv"><span>Boost</span><b id="lBoost">—</b></div>
+        <div class="kv"><span>Coolant</span><b id="lCoolant">—</b></div>
+        <div class="kv"><span>Intake air</span><b id="lIat">—</b></div>
+        <div class="kv"><span>Battery</span><b id="lVolt">—</b></div>
+        <div class="kv"><span>Fuel flow</span><b id="lGph">—</b></div>
+        <div class="kv"><span>Fuel trims</span><b id="lTrim">—</b></div>
+        <div class="bar-kv"><span>Pedal</span><div class="meter"><i id="lPedal"></i></div></div>
+        <div class="bar-kv"><span>Engine load</span><div class="meter"><i id="lLoad"></i></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="hero-row">
+    <div class="card hero">
+      <div class="eyebrow">Last 30 days</div>
+      <div class="hero-line"><span class="hero-num" id="heroMpg">—</span><span class="hero-unit">mpg</span></div>
+      <div class="muted" id="heroSub">No trips yet</div>
+      <div class="cal" id="calLine"></div>
+    </div>
+    <div class="tiles">
+      <div class="card tile"><div class="eyebrow">Lifetime</div><div class="tile-num" id="tLife">—</div><div class="muted small" id="tLifeSub">mpg</div></div>
+      <div class="card tile"><div class="eyebrow">Miles logged</div><div class="tile-num" id="tMiles">—</div><div class="muted small" id="tMilesSub"></div></div>
+      <div class="card tile"><div class="eyebrow">Fuel spent</div><div class="tile-num" id="tCost">—</div><div class="muted small" id="tCostSub"></div></div>
+      <div class="card tile"><div class="eyebrow">Range left</div><div class="tile-num" id="tRange">—</div>
+        <div class="fuelbar" title="Fuel level"><i id="tFuelBar"></i></div><div class="muted small" id="tRangeSub"></div></div>
+    </div>
+  </section>
+
+  <section class="card" id="healthCard">
+    <div class="card-head"><h2>Car health</h2><div class="head-actions"><span class="muted small" id="healthWhen"></span><button class="btn ghost small-btn" id="scanBtn" type="button">Scan now</button></div></div>
+    <div id="health"><p class="muted small">No scan yet. Switch the ignition on, or click Scan now while the car is on.</p></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>MPG by trip</h2>
+      <div class="legend">
+        <span><i class="sw dot1"></i>Trip</span>
+        <span><i class="sw line2"></i>Rolling avg (10 trips)</span>
+      </div>
+    </div>
+    <div class="chart" id="trendChart" style="height:260px"></div>
+  </section>
+
+  <section class="two-col">
+    <div class="card">
+      <div class="card-head"><h2>Mileage by speed</h2><span class="muted small">mph · all trips</span></div>
+      <div class="chart" id="bandChart" style="height:220px"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Where the fuel goes</h2></div>
+      <div class="insights" id="insights"></div>
+    </div>
+  </section>
+
+  <section class="two-col">
+    <div class="card">
+      <div class="card-head"><h2>Performance</h2><span class="muted small">detected automatically</span></div>
+      <div id="perf"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Gears</h2><span class="muted small" id="gearSub"></span></div>
+      <div id="gears"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Trips</h2><span class="muted small" id="tripCount"></span></div>
+    <div class="table-wrap">
+      <table class="trips">
+        <thead><tr><th>When</th><th class="num">Distance</th><th class="num">Time</th><th class="num">Avg speed</th><th class="num">MPG</th><th class="num">Fuel</th><th class="num">Cost</th></tr></thead>
+        <tbody id="tripRows"><tr><td colspan="7" class="muted empty">Trips appear here after the car comes home and uploads.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="two-col">
+    <div class="card">
+      <div class="card-head"><h2>Log a fill-up</h2></div>
+      <form id="fillForm" class="fill-form">
+        <label>Date<input type="datetime-local" name="ts" required></label>
+        <label>Gallons<input type="number" name="gallons" step="0.001" min="0" required placeholder="10.512"></label>
+        <label>Price / gal<input type="number" name="price" step="0.001" min="0" placeholder="3.499"></label>
+        <label>Odometer (mi)<input type="number" name="odometer_mi" step="1" min="0" placeholder="from the car"></label>
+        <label class="check"><input type="checkbox" name="full" checked> Filled to full</label>
+        <button class="btn" type="submit">Add fill-up</button>
+      </form>
+      <p class="muted small">Fill-ups are detected automatically from the fuel gauge; click one to enter the gallons and price from your receipt. Two full fill-ups with real gallons give exact pump MPG and calibration. Until then the fuel gauge calibrates the estimate automatically.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Fill-ups</h2></div>
+      <div class="table-wrap">
+        <table class="fills"><thead><tr><th>Date</th><th class="num">Gallons</th><th class="num">$/gal</th><th class="num">Odometer</th><th class="num">MPG</th><th></th><th></th></tr></thead>
+          <tbody id="fillRows"><tr><td colspan="7" class="muted empty">No fill-ups logged.</td></tr></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <section class="two-col">
+    <div class="card">
+      <div class="card-head"><h2>Log maintenance</h2></div>
+      <form id="maintForm" class="fill-form">
+        <label>Date<input type="date" name="date" required></label>
+        <label>Odometer (mi)<input type="number" name="odometer_mi" step="1" min="0" placeholder="from the car"></label>
+        <label class="span2">Service<input name="kind" list="maintKinds" required placeholder="Oil change"></label>
+        <label>Cost ($)<input type="number" name="cost" step="0.01" min="0" placeholder="optional"></label>
+        <label>Notes<input name="note" placeholder="shop, parts, oil spec…"></label>
+        <button class="btn" type="submit">Add service</button>
+      </form>
+      <datalist id="maintKinds">
+        <option>Oil change</option><option>Tire rotation</option><option>New tires</option>
+        <option>Brake pads</option><option>Brake rotors</option><option>Brake fluid</option>
+        <option>Engine air filter</option><option>Cabin air filter</option><option>Spark plugs</option>
+        <option>Haldex service</option><option>Coolant</option><option>Transmission fluid</option>
+        <option>Battery</option><option>Wiper blades</option><option>Alignment</option><option>Inspection</option>
+      </datalist>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Since last service</h2></div>
+      <div class="insights" id="maintSince"><p class="muted small">Nothing logged yet.</p></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Service history</h2><div class="head-actions"><span class="muted small" id="maintCount"></span><a class="btn ghost small-btn" href="/service" target="_blank" rel="noopener">Print</a></div></div>
+    <div class="table-wrap">
+      <table class="fills"><thead><tr><th>Date</th><th>Service</th><th class="num">Odometer</th><th class="num">Cost</th><th>Notes</th><th></th></tr></thead>
+        <tbody id="maintRows"><tr><td colspan="6" class="muted empty">No maintenance logged.</td></tr></tbody></table>
+    </div>
+  </section>
+</div>
+
+<dialog id="tripDlg" class="dlg wide">
+  <div class="dlg-head">
+    <div><h2 id="tdTitle">Trip</h2><div class="muted small" id="tdSub"></div></div>
+    <div class="dlg-actions">
+      <button class="btn ghost danger" id="tdDelete">Delete</button>
+      <button class="icon-btn" data-close aria-label="Close" autofocus>✕</button>
+    </div>
+  </div>
+  <div class="td-stats" id="tdStats"></div>
+  <div class="td-charts" id="tdCharts"></div>
+</dialog>
+
+<dialog id="fillDlg" class="dlg">
+  <div class="dlg-head"><div><h2>Fill-up</h2><div class="muted small" id="fdSub"></div></div><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+  <form id="fdForm" class="set-form">
+    <label>Gallons<input name="gallons" type="number" step="0.001" min="0" required></label>
+    <label>Price / gal<input name="price" type="number" step="0.001" min="0"></label>
+    <label>Odometer (mi)<input name="odometer_mi" type="number" step="1" min="0"></label>
+    <label class="check"><input type="checkbox" name="full"> Filled to full</label>
+    <p class="muted small" id="fdHint"></p>
+    <div class="dlg-foot"><button class="btn ghost danger" type="button" id="fdDelete">Delete</button><button class="btn" type="submit">Save</button></div>
+  </form>
+</dialog>
+
+<dialog id="setDlg" class="dlg">
+  <div class="dlg-head"><h2>Settings</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+  <form id="setForm" class="set-form">
+    <label>Car name<input name="car_name"></label>
+    <label>VIN (shown on the printed service history)<input name="vin" maxlength="17"></label>
+    <label>Engine size (litres)<input name="displacement_l" type="number" step="0.1" min="0.5"></label>
+    <label>Tank size (gallons)<input name="tank_gal" type="number" step="0.1" min="1"></label>
+    <label>Fuel price when no fill-up logged ($/gal)<input name="fuel_price" type="number" step="0.01" min="0"></label>
+    <label>Calibration
+      <select name="calibration_mode"><option value="auto">Automatic (fill-ups, then fuel gauge)</option><option value="manual">Manual factor</option></select></label>
+    <label>Manual factor<input name="calibration_manual" type="number" step="0.001" min="0.3"></label>
+    <div class="dlg-foot"><button class="btn" type="submit">Save</button></div>
+  </form>
+</dialog>
+
+<div class="tooltip" id="tooltip" hidden></div>
+<script src="/static/car.js"></script>
+<script src="/static/charts.js"></script>
+<script src="/static/app.js"></script>
+<script>carPicker(document.getElementById("carPick"));</script>
+</body>
+</html>

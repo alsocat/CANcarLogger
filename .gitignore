@@ -1,0 +1,15 @@
+# firmware build output and per-machine config (holds WiFi password and tokens)
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/secrets.defaults
+firmware/build.log
+# server
+server/deploy.env
+server/.venv/
+__pycache__/
+*.db
+*.db-*
+# probe dumps can contain the VIN
+tools/scans/
