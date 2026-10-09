@@ -61,7 +61,8 @@ CLEAR_TTL_S = 300  # an unclaimed clear request is dropped, so it can't fire day
 
 
 def clear_req(car):
-    r = clear_requests.setdefault(car, {"at": None, "scope": None, "sent": None, "note": None})
+    r = clear_requests.setdefault(car, {"at": None, "scope": None, "target": None, "dtc": None, "sent": None,
+                                        "note": None, "offer_module": None})
     if r["at"] and not r["sent"] and time.time() - r["at"] > CLEAR_TTL_S:
         r.update(at=None, scope=None, note="Request expired before the car picked it up")
     return r
@@ -476,9 +477,8 @@ async def upload_health(request: Request):
                   (scan_id, car, epoch or now, 0 if epoch else 1, json.dumps(data), now))
     scan_req(car).update(at=None, sent=None)
     if "clear" in data:
-        failed = [r["name"] for r in data["clear"].get("results", []) if not r.get("ok")]
-        clear_req(car).update(at=None, scope=None, sent=None,
-                              note=f"Didn't clear: {', '.join(analysis.MODULE_NAMES.get(n, n) for n in failed)}" if failed else None)
+        clear_req(car).update(at=None, scope=None, target=None, dtc=None, sent=None,
+                              **clear_outcome(data["clear"]))
     return {"status": "ok"}
 
 
@@ -579,6 +579,10 @@ async def post_live(request: Request):
     if clr["at"] and not clr["sent"]:
         clr["sent"] = time.time()
         reply["clear"] = clr["scope"]
+        if clr["target"]:
+            reply["target"] = clr["target"]
+        if clr["dtc"]:
+            reply["dtc"] = clr["dtc"]
     if len(reply) > 1:
         return JSONResponse(reply, status_code=202)  # board acts on it
     return reply
@@ -599,26 +603,68 @@ def scan_status(car):
     running = online and (st["data"].get("rpm") or 0) > 0
     return {"requested_at": req["at"], "sent_at": req.get("sent"), "car_online": online,
             "engine_running": running,
-            "clear": {"requested_at": clr["at"], "scope": clr["scope"], "sent_at": clr["sent"], "note": clr["note"]}}
+            "clear": {"requested_at": clr["at"], "scope": clr["scope"], "target": clr["target"], "dtc": clr["dtc"],
+                      "sent_at": clr["sent"], "note": clr["note"], "offer_module": clr["offer_module"]}}
+
+
+NRC_TEXT = {0x31: "it doesn't accept single codes", 0x12: "it doesn't accept single codes",
+            0x22: "conditions weren't right (is the engine off?)", 0x33: "it needs a security login to clear",
+            0x7F: "it won't clear in this session", 0x11: "it doesn't support clearing over this connection"}
+
+
+def clear_outcome(clear):
+    """Turn the board's per-module clear results into a message for the
+    dashboard, and when a single-code clear was refused, offer the module."""
+    results = clear.get("results", [])
+    failed = [r for r in results if not r.get("ok")]
+    if not results:
+        return {"note": "Nothing answered the clear request.", "offer_module": None}
+    if not failed:
+        return {"note": None, "offer_module": None}
+    r = failed[0]
+    name = analysis.MODULE_NAMES.get(r["name"], r["name"])
+    resp = bytes.fromhex(r.get("resp") or "")
+    why = NRC_TEXT.get(resp[2], f"error {resp[2]:02X}") if len(resp) >= 3 and resp[0] == 0x7F else "no answer"
+    if clear.get("scope") == "code":
+        return {"note": f"{name} didn't clear code {clear.get('dtc')}: {why}. You can clear the whole module instead.",
+                "offer_module": r["name"]}
+    return {"note": "Didn't clear: " + ", ".join(
+        analysis.MODULE_NAMES.get(f["name"], f["name"]) for f in failed) + f" ({why})", "offer_module": None}
 
 
 @app.post("/api/health/clear")
 async def request_clear(request: Request, car: str = ""):
-    """Clear fault codes. Carried out by the board on its next live update,
-    only with the engine off; it then runs a full scan."""
+    """Clear fault codes: the engine, everything, one module, or one code in a
+    (VW) module. Carried out by the board on its next live update, only with
+    the engine off; it then runs a full scan."""
     car = car_key(car)
     body = await request.json()
     scope = body.get("scope")
-    if scope not in ("engine", "all"):
-        raise HTTPException(400, "scope must be engine or all")
+    target = str(body.get("module") or "")
+    dtc = str(body.get("code") or "").upper()
+    if scope not in ("engine", "all", "module", "code"):
+        raise HTTPException(400, "scope must be engine, all, module or code")
     if body.get("confirm") is not True:
         raise HTTPException(400, "not confirmed")
+    if scope in ("module", "code"):
+        with closing(db()) as c:
+            row = c.execute("SELECT data FROM health_scans WHERE car=? ORDER BY device_scan_id DESC LIMIT 1",
+                            (car,)).fetchone()
+        latest = analysis.decode_scan(json.loads(row["data"])) if row else {"modules": []}
+        mod = next((m for m in latest["modules"] if m["name"] == target), None)
+        if not mod:
+            raise HTTPException(400, "unknown module")
+        if scope == "code":
+            hit = next((d for d in mod["codes"] if d["code"] == dtc), None)
+            if not hit or not hit.get("vw"):
+                raise HTTPException(400, "single codes can only be cleared in VW modules other than the engine")
     status = scan_status(car)
     if not status["car_online"]:
         raise HTTPException(409, "The car isn't connected. Switch the ignition on near home WiFi.")
     if status["engine_running"]:
         raise HTTPException(409, "Switch the engine off first (leave the ignition on).")
-    clear_req(car).update(at=time.time(), scope=scope, sent=None, note=None)
+    clear_req(car).update(at=time.time(), scope=scope, target=target if scope in ("module", "code") else None,
+                          dtc=dtc if scope == "code" else None, sent=None, note=None, offer_module=None)
     return scan_status(car)
 
 

@@ -177,8 +177,11 @@ def decode_scan(data):
         misfire.append({"cyl": "all" if i == 0 else i, "avg10": t.get(0x0B), "last": t.get(0x0C)})
     return {"modules": modules, "mil": mil, "mil_count": mil_count, "misfire": misfire,
             "odo_km": data.get("odo_km") or None, "vin": data.get("vin") or None,
-            "clear": [{"name": r["name"], "label": MODULE_NAMES.get(r["name"], r["name"]), "ok": bool(r.get("ok"))}
-                      for r in (data.get("clear") or {}).get("results", [])] or None}
+            "clear": {"scope": data["clear"].get("scope"), "target": data["clear"].get("target") or None,
+                      "dtc": data["clear"].get("dtc") or None,
+                      "results": [{"name": r["name"], "label": MODULE_NAMES.get(r["name"], r["name"]),
+                                   "ok": bool(r.get("ok"))} for r in data["clear"].get("results", [])]}
+                     if data.get("clear") else None}
 
 
 # ----------------------------------------------------------- performance ---

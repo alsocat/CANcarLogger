@@ -191,9 +191,10 @@
 </dialog>
 
 <dialog id="clearDlg" class="dlg">
-  <div class="dlg-head"><div><h2>Clear fault codes</h2><div class="muted small">Ignition on, engine off. Takes about 30 seconds.</div></div><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+  <div class="dlg-head"><div><h2 id="cdTitle">Clear fault codes</h2><div class="muted small">Ignition on, engine off. Takes about 30 seconds.</div></div><button class="icon-btn" data-close aria-label="Close">✕</button></div>
   <form id="cdForm" class="set-form">
-    <div class="choice">
+    <p class="small" id="cdTarget" hidden></p>
+    <div class="choice" id="cdChoice">
       <label class="check"><input type="radio" name="scope" value="engine" checked> Engine only (check engine light)</label>
       <label class="check"><input type="radio" name="scope" value="all"> All modules the logger reads (engine, ABS, airbag, climate…)</label>
     </div>
@@ -201,7 +202,7 @@
       <b>Before you clear</b>
       <ul>
         <li>Clearing turns the light off but doesn't fix anything. A fault that's still there comes back, often within a drive.</li>
-        <li>Emissions readiness resets. The car fails a smog or emissions test until it's been driven normally for a few days, usually 50–100 miles.</li>
+        <li id="cdReadiness">Emissions readiness resets. The car fails a smog or emissions test until it's been driven normally for a few days, usually 50–100 miles.</li>
         <li>The record of when each fault happened is erased. Note the codes first if you'll want them.</li>
       </ul>
     </div>

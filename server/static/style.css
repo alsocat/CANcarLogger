@@ -231,3 +231,6 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 .warn-box ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 .warn-text { color: var(--critical); }
 .clear-line { margin: 0 0 8px; }
+.module .clr, .code .clr { padding: 2px 8px; font-size: 12px; }
+.module .clr { align-self: flex-start; }
+.code .clr { margin-left: 6px; }

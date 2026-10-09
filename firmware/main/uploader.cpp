@@ -97,10 +97,29 @@ static void post_live()
         if (strstr(resp, "\"scan\":true")) {
             scan_requested.store(true);
         }
+        auto field = [&](const char *key, char *out, size_t len) {
+            out[0] = 0;
+            if (const char *p = strstr(resp, key)) {
+                p += strlen(key);
+                size_t i = 0;
+                while (p[i] && p[i] != '"' && i + 1 < len) {
+                    out[i] = p[i];
+                    i++;
+                }
+                out[i] = 0;
+            }
+        };
         if (strstr(resp, "\"clear\":\"engine\"")) {
             clear_requested.store(CLEAR_ENGINE);
         } else if (strstr(resp, "\"clear\":\"all\"")) {
             clear_requested.store(CLEAR_ALL);
+        } else if (strstr(resp, "\"clear\":\"module\"")) {
+            field("\"target\":\"", clear_target, sizeof(clear_target));
+            clear_requested.store(CLEAR_MODULE);
+        } else if (strstr(resp, "\"clear\":\"code\"")) {
+            field("\"target\":\"", clear_target, sizeof(clear_target));
+            field("\"dtc\":\"", clear_dtc, sizeof(clear_dtc));
+            clear_requested.store(CLEAR_CODE);
         }
     }
     esp_http_client_cleanup(c);

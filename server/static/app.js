@@ -396,25 +396,50 @@ function renderScanBtn(r) {
 $("scanBtn").onclick = async () => renderScanBtn(await api("/api/health/scan", { method: "POST" }));
 
 // ---------- clearing codes ----------
+let clearReady = false;  // car connected, engine off, nothing pending
 function renderClear(r) {
   const c = r.clear || {};
   const b = $("clearBtn");
   const busy = !!c.requested_at;
-  b.disabled = busy || !r.car_online || r.engine_running;
+  clearReady = !busy && r.car_online && !r.engine_running;
+  for (const x of document.querySelectorAll(".clr")) x.disabled = !clearReady;
+  b.disabled = !clearReady;
   b.textContent = busy ? (c.sent_at ? "Clearing…" : "Waiting for car…") : "Clear codes…";
   b.title = !r.car_online ? "The car needs to be on and on home WiFi"
     : r.engine_running ? "Switch the engine off first (leave the ignition on)" : "Erase stored fault codes";
   $("cdStatus").textContent = c.note || "";
   if (busy) { clearTimeout(renderScanBtn.timer); renderScanBtn.timer = setTimeout(loadHealth, 3000); }
 }
-$("clearBtn").onclick = () => { $("cdForm").reset(); $("cdStatus").textContent = ""; $("clearDlg").showModal(); };
+// target: null = choose engine/all in the dialog; {module, label} = one module;
+// {module, label, code} = one code in that module.
+let clearTarget = null;
+function openClear(target) {
+  clearTarget = target;
+  $("cdForm").reset();
+  $("cdStatus").textContent = "";
+  $("cdChoice").hidden = !!target;
+  $("cdTarget").hidden = !target;
+  $("cdTitle").textContent = !target ? "Clear fault codes" : target.code ? `Clear code ${target.code}` : `Clear ${target.label}`;
+  $("cdTarget").textContent = !target ? "" : target.code
+    ? `Only ${target.code} in ${target.label}. Some modules don't accept single codes; if this one refuses, you can clear the whole module instead.`
+    : `Every code in ${target.label}, and nothing else.`;
+  const emissions = !target || target.module === "engine" || target.module === "trans";
+  $("cdReadiness").hidden = !emissions;
+  $("clearDlg").showModal();
+}
+$("clearBtn").onclick = () => openClear(null);
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-clear-module]");
+  if (b) openClear({ module: b.dataset.clearModule, label: b.dataset.label, code: b.dataset.code || null });
+});
 $("cdForm").onsubmit = async e => {
   e.preventDefault();
-  const scope = new FormData($("cdForm")).get("scope");
+  const t = clearTarget;
+  const req = t ? { scope: t.code ? "code" : "module", module: t.module, code: t.code } : { scope: new FormData($("cdForm")).get("scope") };
   $("cdGo").disabled = true;
   try {
     const r = await fetch("/api/health/clear", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope, confirm: $("cdOk").checked }) });
+      body: JSON.stringify({ ...req, confirm: $("cdOk").checked }) });
     const body = await r.json();
     if (!r.ok) { $("cdStatus").textContent = body.detail || "Couldn't send the request."; return; }
     $("clearDlg").close();
@@ -435,22 +460,29 @@ async function loadHealth() {
     : active.length ? chip("warning", `${codes.length} fault code${codes.length === 1 ? "" : "s"} stored`)
     : codes.length ? chip("info", `${codes.length} pending code${codes.length === 1 ? "" : "s"}`)
     : chip("good", "No fault codes in any module");
+  const clrBtn = (module, label, code) => `<button class="clr small-btn btn ghost" type="button" data-clear-module="${esc(module)}" data-label="${esc(label)}"${
+    code ? ` data-code="${esc(code)}"` : ""}${clearReady ? "" : " disabled"} title="${code ? "Clear just this code" : "Clear every code in this module"}">Clear</button>`;
   const modules = L.modules.map(m => `<div class="module"><span class="name">${esc(m.label)}</span>${
-    !m.answered ? chip("info", "No answer") : m.codes.length ? chip("warning", `${m.codes.length} code${m.codes.length === 1 ? "" : "s"}`) : chip("good", "OK")}</div>`).join("");
+    !m.answered ? chip("info", "No answer") : m.codes.length ? chip("warning", `${m.codes.length} code${m.codes.length === 1 ? "" : "s"}`) + clrBtn(m.name, m.label) : chip("good", "OK")}</div>`).join("");
+  const modName = Object.fromEntries(L.modules.map(m => [m.label, m.name]));
   const codeList = codes.map(c => `<div class="code"><b>${c.code}</b>
       <span>${c.text ? esc(c.text) : `<a href="${lookup(c.code, c.vw && c.module)}" target="_blank" rel="noopener">${c.vw ? "VW fault number — look it up" : "Look up " + c.code}</a>`}</span>
       <span class="flags">${c.new ? '<span class="badge new">new</span>' : ""}${c.active ? '<span class="badge">active now</span>' : ""}${c.stored ? '<span class="badge">stored</span>' : ""}${c.pending && !c.stored ? '<span class="badge">pending</span>' : ""}</span>
-      <span class="meta">${esc(c.module)} · first seen ${fmt.date(c.first_ts)}${c.vw ? "" : " · fault type " + c.ftb}</span></div>`).join("");
+      <span class="meta">${esc(c.module)} · first seen ${fmt.date(c.first_ts)}${c.vw ? "" : " · fault type " + c.ftb}${
+        c.vw ? " " + clrBtn(modName[c.module], c.module, c.code) : ""}</span></div>`).join("");
   const mis = L.misfire.length ? `<div class="sub-head">Misfire counters <span class="muted small">(last drive cycle · 10-cycle average)</span></div>
     <div class="misfire">${L.misfire.map(m => `<div class="insight"><div class="eyebrow">${m.cyl === "all" ? "All cylinders" : "Cylinder " + m.cyl}</div>
       <div class="tile-num">${m.last ?? "—"}</div><div class="muted small">avg ${m.avg10 ?? "—"}</div></div>`).join("")}</div>` : "";
   const cleared = h.cleared.length ? `<details><summary>${h.cleared.length} code${h.cleared.length === 1 ? "" : "s"} seen before but gone now</summary><div class="codes">${
     h.cleared.map(c => `<div class="code"><b>${c.code}</b><span>${c.text ? esc(c.text) : `<a href="${lookup(c.code)}" target="_blank" rel="noopener">Look up</a>`}</span><span></span>
       <span class="meta">${esc(c.module)} · last seen ${fmt.date(c.last_ts)}</span></div>`).join("")}</div></details>` : "";
-  const clr = L.clear ? `<p class="small clear-line">Codes were cleared just before this scan: ${
-    L.clear.map(r => `${esc(r.label)} ${r.ok ? "✓" : "✗ didn't clear"}`).join(" · ")}${
-    codes.length ? ". The codes shown came back right away, so the fault is still there." : "."}</p>` : "";
-  const note = h.request.clear && h.request.clear.note ? `<p class="small warn-text">${esc(h.request.clear.note)}</p>` : "";
+  const C = L.clear;
+  const clr = C ? `<p class="small clear-line">${C.dtc ? `Code ${esc(C.dtc)} was cleared just before this scan` : "Codes were cleared just before this scan"}: ${
+    C.results.map(r => `${esc(r.label)} ${r.ok ? "✓" : "✗ didn't clear"}`).join(" · ")}${
+    codes.length && C.results.some(r => r.ok) ? ". Anything still listed came back right away, so that fault is still there." : "."}</p>` : "";
+  const rc = h.request.clear || {};
+  const offer = rc.offer_module ? L.modules.find(m => m.name === rc.offer_module) : null;
+  const note = rc.note ? `<p class="small warn-text">${esc(rc.note)}${offer ? " " + clrBtn(offer.name, offer.label) : ""}</p>` : "";
   $("health").innerHTML = `${clr}${note}<div class="health-top">${top}<span class="muted small">${h.scans} scan${h.scans === 1 ? "" : "s"} so far · full scan every 20 starts or 300 mi, or when engine codes change</span></div>
     <div class="modules">${modules}</div>${codeList ? `<div class="codes">${codeList}</div>` : ""}${mis}${cleared}`;
 }

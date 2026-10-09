@@ -46,6 +46,7 @@ uint32_t g_boot_id = 0;
 
 std::atomic<bool> scan_requested{false};
 std::atomic<int> clear_requested{0};
+char clear_target[16], clear_dtc[8];
 static char clear_buf[96] = "";  // outcome of the last clear request, for the live view
 static char health_buf[96] = "no check yet";
 
@@ -550,8 +551,13 @@ static void health_scan(const std::string &extra = "")
 static std::string clear_codes(int scope)
 {
     static uint8_t b[64];
+    static const char *names[] = {"", "engine", "all", "module", "code"};
     std::string js = "\"clear\":{\"scope\":\"";
-    js += scope == CLEAR_ALL ? "all" : "engine";
+    js += names[scope];
+    js += "\",\"target\":\"";
+    js += scope >= CLEAR_MODULE ? clear_target : "";
+    js += "\",\"dtc\":\"";
+    js += scope == CLEAR_CODE ? clear_dtc : "";
     js += "\",\"results\":[";
     bool first = true;
     auto result = [&](const char *name, int n, uint8_t ok_sid) {
@@ -565,21 +571,41 @@ static std::string clear_codes(int scope)
         append_hex(js, b, n > 0 ? (n > 8 ? 8 : n) : 0);
         js += "\"}";
     };
-    int n = ecu("04", b, sizeof(b), 3000);
-    result("engine", n, 0x44);
-    if (!is_vw) {
-        n = ecu("04", b, sizeof(b), 3000, 0x7E1, 0x7E9);
-        if (n > 0) {
-            result("trans", n, 0x44);
+    // OBD mode 04 clears the engine (all of its codes; it can't pick one)
+    auto clear_obd = [&](const char *name, uint16_t tx, uint16_t rx, bool must_answer) {
+        int n = ecu("04", b, sizeof(b), 3000, tx, rx);
+        if (n > 0 || must_answer) {
+            result(name, n, 0x44);
         }
-    } else if (scope == CLEAR_ALL) {
+    };
+    // UDS ClearDiagnosticInformation for a VW module: FFFFFF = all, or one DTC
+    auto clear_uds = [&](const Module &m, const char *dtc) {
+        char req[16];
+        snprintf(req, sizeof(req), "14%s", dtc);
+        ecu("1003", b, sizeof(b), 1000, m.tx, m.rx);
+        int n = ecu(req, b, sizeof(b), 5000, m.tx, m.rx);
+        result(m.name, n, 0x54);
+    };
+    bool dtc_ok = strlen(clear_dtc) == 6 && strspn(clear_dtc, "0123456789ABCDEFabcdef") == 6;
+
+    if (scope == CLEAR_ENGINE || scope == CLEAR_ALL ||
+        (scope == CLEAR_MODULE && strcmp(clear_target, "engine") == 0)) {
+        clear_obd("engine", 0x7E0, 0x7E8, true);
+    }
+    if (!is_vw && (scope == CLEAR_ENGINE || scope == CLEAR_ALL ||
+                   (scope == CLEAR_MODULE && strcmp(clear_target, "trans") == 0))) {
+        clear_obd("trans", 0x7E1, 0x7E9, scope == CLEAR_MODULE);
+    }
+    if (is_vw) {
         for (const Module &m : MODULES) {
             if (m.tx == 0x7E0) {
-                continue;  // done above
+                continue;  // engine: mode 04 above
             }
-            ecu("1003", b, sizeof(b), 1000, m.tx, m.rx);
-            n = ecu("14FFFFFF", b, sizeof(b), 5000, m.tx, m.rx);
-            result(m.name, n, 0x54);
+            if (scope == CLEAR_ALL || (scope == CLEAR_MODULE && strcmp(clear_target, m.name) == 0)) {
+                clear_uds(m, "FFFFFF");
+            } else if (scope == CLEAR_CODE && dtc_ok && strcmp(clear_target, m.name) == 0) {
+                clear_uds(m, clear_dtc);
+            }
         }
     }
     js += "]}";
