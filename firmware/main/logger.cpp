@@ -976,7 +976,7 @@ static void logger_task(void *)
         } else if (loop % 40 == 22) {
             query_odo();
         }
-#if CONFIG_OBD_DOCK_TX_GPIO >= 0
+#ifdef CONFIG_OBD_IPOD_USB
         // The boost gauge wants MAP every loop, hard acceleration most of all
         if (burst || loop % 4 != 1) {
             query("010B");

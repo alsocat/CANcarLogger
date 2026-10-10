@@ -2,3 +2,4 @@ dependencies:
   espressif/mdns: "*"
   joltwallet/littlefs: "*"
   espressif/led_strip: "^3"
+  espressif/usb_host_cdc_acm: "2.*"

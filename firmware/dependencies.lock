@@ -19,6 +19,47 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.14.0
+  espressif/usb:
+    component_hash: 99eee72ea224d9117d4c342442717a1f20bf8112e2ab5d7d7038b827874f4c92
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.5.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    - esp32h4
+    - linux
+    version: 1.6.0
+  espressif/usb_host_cdc_acm:
+    component_hash: 5bc1372b46de79ccae1dd17de48e30dfa1e8ab75269c2ebf54da01370f9e42fb
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    - name: espressif/usb
+      registry_url: https://components.espressif.com
+      require: public
+      rules:
+      - if: idf_version >=6.0
+      - if: target not in ["linux"]
+      version: ^1.0.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32h4
+    - esp32s31
+    - linux
+    version: 2.4.1
   idf:
     source:
       type: idf
@@ -36,7 +77,8 @@ dependencies:
 direct_dependencies:
 - espressif/led_strip
 - espressif/mdns
+- espressif/usb_host_cdc_acm
 - joltwallet/littlefs
-manifest_hash: 0587bf0743eb0c3fd6ba6a7617467fd3490a104d8f7c1f28e1a287941dd8d738
+manifest_hash: 068065283f26025a661c76a5212b2b9d892be0ec992db5d476967faf68766f20
 target: esp32s3
 version: 3.0.0
