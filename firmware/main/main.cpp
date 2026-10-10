@@ -325,6 +325,7 @@ extern "C" void app_main(void)
     http_start();
     can_start();
     logger_start();
+    dock_start();
     uploader_start();
     power_start();
 }

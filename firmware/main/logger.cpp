@@ -799,6 +799,21 @@ static void end_trip()
     state = ST_ENGINE_OFF;
 }
 
+bool logger_dock_line(char *out, size_t len)
+{
+    if (!live_lock || esp_timer_get_time() - live_updated_us > 1000000) {
+        return false;
+    }
+    xSemaphoreTake(live_lock, portMAX_DELAY);
+    Record r = live;
+    xSemaphoreGive(live_lock);
+    int baro = r.baro_kpa ? r.baro_kpa : 101;
+    // boost in tenths of psi: kPa * 1.45038
+    snprintf(out, len, "B=%d R=%u C=%d I=%d S=%u\n", ((int)r.map_kpa - baro) * 14504 / 1000,
+             r.rpm, r.coolant - 40, r.iat - 40, r.speed_kph);
+    return true;
+}
+
 bool logger_live_json(char *out, size_t len)
 {
     // Values go stale during a health scan, but keep reporting its progress
@@ -961,6 +976,12 @@ static void logger_task(void *)
         } else if (loop % 40 == 22) {
             query_odo();
         }
+#if CONFIG_OBD_DOCK_TX_GPIO >= 0
+        // The boost gauge wants MAP every loop, hard acceleration most of all
+        if (burst || loop % 4 != 1) {
+            query("010B");
+        }
+#endif
         loop++;
 
         now = esp_timer_get_time();

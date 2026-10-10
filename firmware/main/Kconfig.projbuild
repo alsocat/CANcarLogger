@@ -23,6 +23,9 @@ menu "OBD WiFi Bridge"
     config OBD_SERVER_TOKEN
         string "Token sent to the carlog server"
         default ""
+    config OBD_DOCK_TX_GPIO
+        int "GPIO sending boost to an iPod dock serial port (-1 = off)"
+        default -1
     config OBD_SLEEP
         bool "Deep sleep while the car is off (board on always-on OBD power)"
         default y

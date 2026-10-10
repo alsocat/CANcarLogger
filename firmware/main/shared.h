@@ -111,6 +111,8 @@ float logger_ecu_volts();         // battery volts the ECU reports (PID 42), 0 i
 void uploader_start();
 // Latest values as JSON for the live view; returns false if no fresh data.
 bool logger_live_json(char *out, size_t len);
+bool logger_dock_line(char *out, size_t len);  // one boost-gauge line, false if not fresh
+void dock_start();
 const char *logger_state();
 // The trip being recorded right now (flushed part only), so the uploader can
 // stream it while WiFi is up. Both return false/-1 when no trip is open.
