@@ -35,6 +35,9 @@
 
 static const char *TAG = "power";
 
+#ifndef CONFIG_OBD_SLEEP
+#define CONFIG_OBD_SLEEP 0  // switched off in menuconfig
+#endif
 #define CAN_TX_GPIO GPIO_NUM_4
 #define CAN_RX_GPIO GPIO_NUM_5
 #define WAKE_VOLTS (CONFIG_OBD_WAKE_VOLTS_X10 / 10.0f)
