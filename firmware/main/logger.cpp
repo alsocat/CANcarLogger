@@ -903,11 +903,11 @@ bool logger_dock_line(char *out, size_t len)
     Record r = live;
     xSemaphoreGive(live_lock);
     int baro = r.baro_kpa ? r.baro_kpa : 101;
-    // Units in the boost_gauge plugin's header: boost 0.1 psi (kPa * 1.45038),
+    // Units in the boost_gauge plugin's header: boost 0.1 psi (kPa * 1.4504 tenths),
     // percentages 0.1 %, timing 0.1 deg, battery 0.01 V, lambda 0.001
     snprintf(out, len,
              "B=%d R=%u S=%u C=%d I=%d T=%d P=%d L=%d A=%d V=%u F=%d M=%d E=%d G=%d K=%d O=%d\n",
-             ((int)r.map_kpa - baro) * 14504 / 1000, r.rpm, r.speed_kph, r.coolant - 40, r.iat - 40,
+             ((int)r.map_kpa - baro) * 14504 / 10000, r.rpm, r.speed_kph, r.coolant - 40, r.iat - 40,
              r.throttle * 1000 / 255, r.pedal * 1000 / 255, r.load * 1000 / 255, r.timing * 5 - 640,
              r.voltage_mv / 10, r.fuel_level * 1000 / 255, (int)((r.lambda * 2000LL) >> 16),
              (r.stft - 128) * 1000 / 128, (r.ltft - 128) * 1000 / 128, r.cat_temp / 10 - 40, r.ambient - 40);
