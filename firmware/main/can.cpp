@@ -159,6 +159,9 @@ static void can_watch_task(void *)
 
 void can_start()
 {
+    if (rxq) {  // already up (the early restart check started it)
+        return;
+    }
     rxq = xQueueCreate(64, sizeof(RxFrame));
     req_lock = xSemaphoreCreateMutex();
     uint8_t listen = 0;

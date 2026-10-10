@@ -11,7 +11,7 @@
 <div class="app">
   <header class="topbar">
     <div class="brand">
-      <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><path d="M4 22a12 12 0 0 1 24 0" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/><path d="M16 22l6-7" stroke="var(--series-2)" stroke-width="3" stroke-linecap="round"/></svg>
+      <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><path d="M4 22a12 12 0 0 1 24 0" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="butt"/><path d="M16 22l6-7" stroke="currentColor" stroke-width="3" stroke-linecap="square"/></svg>
       <div>
         <div class="car-name" id="carName">carlog</div>
         <div class="muted small" id="carSub">fuel economy &amp; telemetry</div>
@@ -19,7 +19,6 @@
     </div>
     <div class="topbar-right">
       <select id="carPick" class="car-pick" aria-label="Car" hidden></select>
-      <a class="btn ghost small-btn" href="/vitals">Vitals</a>
       <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">connecting…</span></span>
       <button class="icon-btn" id="themeBtn" title="Toggle light/dark" aria-label="Toggle light/dark">
         <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="currentColor"/></svg>
@@ -30,34 +29,31 @@
     </div>
   </header>
 
-  <!-- Live view: only shown while the car is streaming -->
-  <section class="card live" id="live" hidden>
-    <div class="card-head">
-      <h2><span class="live-dot"></span>Live</h2>
-      <a class="muted small" href="/vitals">Full vitals →</a>
-    </div>
-    <div class="live-grid">
-      <div class="gauge-wrap" id="gSpeed"></div>
-      <div class="gauge-wrap" id="gRpm"></div>
-      <div class="live-mpg">
-        <div class="eyebrow">Instant</div>
-        <div class="hero-num" id="lInstant">—</div>
-        <div class="muted">mpg</div>
-        <div class="live-trip"><span class="muted">This trip</span> <b id="lTripMpg">—</b> mpg · <b id="lTripMi">0.0</b> mi</div>
-      </div>
-      <div class="live-stats">
-        <div class="kv"><span>Boost</span><b id="lBoost">—</b></div>
-        <div class="kv"><span>Coolant</span><b id="lCoolant">—</b></div>
-        <div class="kv"><span>Intake air</span><b id="lIat">—</b></div>
-        <div class="kv"><span>Battery</span><b id="lVolt">—</b></div>
-        <div class="kv"><span>Fuel flow</span><b id="lGph">—</b></div>
-        <div class="kv"><span>Fuel trims</span><b id="lTrim">—</b></div>
-        <div class="bar-kv"><span>Pedal</span><div class="meter"><i id="lPedal"></i></div></div>
-        <div class="bar-kv"><span>Engine load</span><div class="meter"><i id="lLoad"></i></div></div>
-      </div>
-    </div>
-  </section>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" data-tab="overview">Overview</button>
+    <button role="tab" data-tab="live">Live<span class="tab-live" id="liveDot" hidden></span></button>
+    <button role="tab" data-tab="health">Health<span class="tab-badge" id="healthBadge" hidden></span></button>
+    <button role="tab" data-tab="driving">Driving</button>
+    <button role="tab" data-tab="fuel">Fuel</button>
+    <button role="tab" data-tab="service">Service</button>
+  </nav>
 
+  <div class="tab-panel" role="tabpanel" data-panel="live">
+    <section class="card" id="vOffline">
+      <h2>Car not connected</h2>
+      <p class="muted" id="vOfflineText">Connecting…</p>
+    </section>
+    <div id="vLiveArea" hidden>
+      <section class="gauges">
+        <div class="card"><div class="eyebrow">Speed</div><div class="gauge-wrap" id="vSpeed"></div></div>
+        <div class="card"><div class="eyebrow">Engine speed</div><div class="gauge-wrap" id="vRpm"></div></div>
+        <div class="card"><div class="eyebrow">Boost</div><div class="gauge-wrap" id="vBoost"></div></div>
+      </section>
+      <section class="vitals" id="vitals" style="margin-top:16px"></section>
+    </div>
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="overview">
   <section class="hero-row">
     <div class="card hero">
       <div class="eyebrow">Last 30 days</div>
@@ -74,11 +70,16 @@
     </div>
   </section>
 
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="health">
   <section class="card" id="healthCard">
     <div class="card-head"><h2>Car health</h2><div class="head-actions"><span class="muted small" id="healthWhen"></span><button class="btn ghost small-btn" id="clearBtn" type="button">Clear codes…</button><button class="btn ghost small-btn" id="scanBtn" type="button">Scan now</button></div></div>
     <div id="health"><p class="muted small">No scan yet. Switch the ignition on, or click Scan now while the car is on.</p></div>
   </section>
+  </div>
 
+  <div class="tab-panel" role="tabpanel" data-panel="overview">
   <section class="card">
     <div class="card-head">
       <h2>MPG by trip</h2>
@@ -101,6 +102,9 @@
     </div>
   </section>
 
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="driving">
   <section class="two-col">
     <div class="card">
       <div class="card-head"><h2>Performance</h2><span class="muted small">detected automatically</span></div>
@@ -122,6 +126,9 @@
     </div>
   </section>
 
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="fuel">
   <section class="two-col">
     <div class="card">
       <div class="card-head"><h2>Log a fill-up</h2></div>
@@ -144,6 +151,9 @@
     </div>
   </section>
 
+  </div>
+
+  <div class="tab-panel" role="tabpanel" data-panel="service">
   <section class="two-col">
     <div class="card">
       <div class="card-head"><h2>Log maintenance</h2></div>
@@ -176,6 +186,7 @@
         <tbody id="maintRows"><tr><td colspan="6" class="muted empty">No maintenance logged.</td></tr></tbody></table>
     </div>
   </section>
+  </div>
 </div>
 
 <dialog id="tripDlg" class="dlg wide">
@@ -235,13 +246,21 @@
     <label>Calibration
       <select name="calibration_mode"><option value="auto">Automatic (fill-ups, then fuel gauge)</option><option value="manual">Manual factor</option></select></label>
     <label>Manual factor<input name="calibration_manual" type="number" step="0.001" min="0.3"></label>
+    <label class="check"><input type="checkbox" name="board_led" id="setLed"> Status light on the logger board</label>
+    <p class="muted small">Turn it off once the board is in a closed case. The board picks this up within a second while it's awake, and remembers it.</p>
     <div class="dlg-foot"><button class="btn" type="submit">Save</button></div>
   </form>
+  <div class="set-session" id="setSession" hidden>
+    <span class="muted small" id="setDevices"></span>
+    <div class="head-actions"><button class="btn ghost small-btn" id="signOutOthersBtn" type="button">Sign out all other devices</button>
+      <button class="btn ghost small-btn" id="signOutBtn" type="button">Sign out</button></div>
+  </div>
 </dialog>
 
 <div class="tooltip" id="tooltip" hidden></div>
 <script src="/static/car.js"></script>
 <script src="/static/charts.js"></script>
+<script src="/static/vitals.js"></script>
 <script src="/static/app.js"></script>
 <script>carPicker(document.getElementById("carPick"));</script>
 </body>

@@ -48,6 +48,7 @@ function lineChart(container, opts) {
   const draw = () => {
     container.innerHTML = "";
     const W = container.clientWidth, H = container.clientHeight;
+    if (!W) return;  // hidden tab: drawn when it opens (ResizeObserver)
     const m = { l: 44, r: 12, t: 10, b: 24 };
     const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": opts.label || "chart" }, container);
     const xs = opts.x;
@@ -79,7 +80,7 @@ function lineChart(container, opts) {
       if (s.kind === "dot") {
         s.values.forEach((v, i) => {
           if (v == null) return;
-          el("circle", { cx: X(xs[i]), cy: Y(v), r: 4.5, fill: color, stroke: cssVar("--surface-1"), "stroke-width": 2 }, svg);
+          el("rect", { x: X(xs[i]) - 4.5, y: Y(v) - 4.5, width: 9, height: 9, fill: color, stroke: cssVar("--surface-1"), "stroke-width": 2 }, svg);
         });
       } else {
         let d = "", pen = false;
@@ -147,6 +148,7 @@ function barChart(container, opts) {
   const draw = () => {
     container.innerHTML = "";
     const W = container.clientWidth, H = container.clientHeight;
+    if (!W) return;  // hidden tab: drawn when it opens (ResizeObserver)
     const m = { l: 36, r: 8, t: 18, b: 24 };
     const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": opts.label || "bar chart" }, container);
     const vals = opts.values.filter(v => v != null);
@@ -206,12 +208,12 @@ function gauge(container, { min, max, label, unit, fmt = v => Math.round(v), red
     const [x0, y0] = pt(a0), [x1, y1] = pt(a1);
     return `M${x0},${y0}A${r},${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1},${y1}`;
   };
-  el("path", { d: arc(start, start + sweep), fill: "none", stroke: "var(--surface-2)", "stroke-width": 12, "stroke-linecap": "round" }, svg);
+  el("path", { d: arc(start, start + sweep), fill: "none", stroke: "var(--surface-2)", "stroke-width": 12, "stroke-linecap": "butt" }, svg);
   if (redline) {
     const a = start + sweep * (redline - min) / (max - min);
     el("path", { d: arc(a, start + sweep), fill: "none", stroke: "var(--critical)", "stroke-width": 3, opacity: .7 }, svg);
   }
-  const val = el("path", { fill: "none", stroke: "var(--series-1)", "stroke-width": 12, "stroke-linecap": "round" }, svg);
+  const val = el("path", { fill: "none", stroke: "var(--series-1)", "stroke-width": 12, "stroke-linecap": "butt" }, svg);
   const num = el("text", { x: cx, y: cy + 6, "text-anchor": "middle", style: "font-size:40px;font-weight:700;fill:var(--text-primary)" }, svg);
   const lab = el("text", { x: cx, y: cy + 30, "text-anchor": "middle", style: "font-size:13px;fill:var(--text-secondary)" }, svg);
   lab.textContent = unit;

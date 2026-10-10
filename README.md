@@ -34,11 +34,18 @@ tools/      vwprobe.py: read-only explorer for VW module data over /uds
   that refuse single codes get a "clear the whole module" offer instead).
   The board only does it with the ignition on and the engine off, an unclaimed
   request expires after 5 minutes, and a full scan runs right after.
-- **Vitals page**: live gauges at 2 Hz.
+- **Live tab**: speed, rpm and boost gauges plus vitals tiles with 2-minute
+  sparklines, at 2 Hz while open.
 - **Maintenance log** with a printable service history.
 - **Gears** learned from rpm/speed, performance runs, VW odometer via UDS.
-- **Sleep**: on always-on OBD power the board deep-sleeps while the car is off
-  and wakes when the engine starts (battery voltage) or on CAN traffic.
+- **Sleep**: on always-on OBD power the board deep-sleeps about 15 s after the
+  car goes quiet (once uploads are done) and wakes on CAN activity. A VW's OBD
+  port carries no messages by itself, but unlocking, opening a door or
+  switching the ignition on puts a burst on it, which is enough. For 10 minutes
+  after a drive it also checks the ECU every 10 s, since a quick restart makes
+  no burst. An optional battery divider adds voltage-based waking.
+- **Status light** on the board can be switched off from the dashboard
+  settings (for a closed case).
 - **Several cars**: each board reports its car's VIN; the dashboard keeps cars
   apart and shows a picker once there's more than one.
 
@@ -48,10 +55,10 @@ See `docs/wiring.html` (or the PDF). In short:
 
 | Part | Notes |
 |---|---|
-| ESP32-S3 (DevKitC-1 or SuperMini) | GPIO4 = CAN TX, GPIO5 = CAN RX, GPIO1 = battery sense |
+| ESP32-S3 (DevKitC-1 or SuperMini) | GPIO4 = CAN TX, GPIO5 = CAN RX, GPIO1 = battery sense (optional) |
 | CAN transceiver | Boards sold as "SN65HVD230 / WCMCU-230" may carry 5 V chips: power them from 5 V and put a 1 kΩ / 4.7 kΩ divider on CRX. A genuine 3.3 V part goes on 3V3 with CRX direct. Remove the board's 120 Ω terminator. |
 | Mini560 fixed 5 V buck | From OBD pin 16 through a 1 A fuse |
-| 1 MΩ / 220 kΩ + 100 nF | Battery sense for sleep |
+| 1 MΩ / 220 kΩ + 100 nF | Optional battery sense; set `OBD_VBAT_GPIO` to 1 when fitted |
 
 Pin 6 = CAN-H, pin 14 = CAN-L, pins 4/5 = ground, 16 = +12 V always on.
 
@@ -75,8 +82,10 @@ Board pages (OTA token in the `X-OTA-Token` header for POSTs):
 - `POST /can?listen=1|0`, `?probe=1`, `?hold=N`, `?analyze=1` CAN mode and
   bench wiring checks (bench only; never `probe`/`hold` on a car)
 
-Sleep only arms once the battery-sense reading has matched the voltage the
-ECU reports, so a board without the divider simply stays awake.
+Without a battery divider (`OBD_VBAT_GPIO = -1`, the default) the board wakes
+on CAN activity only. With one, sleep arms once its reading has matched the
+voltage the ECU reports. Each sleep starts with 5 s of timer-only "settling":
+entering deep sleep put a glitch on CAN RX that would otherwise wake it at once.
 
 Options live under `idf.py menuconfig` → *OBD WiFi Bridge* (sleep, battery
 sense pin and ratio, wake voltage, server host/port).
@@ -92,10 +101,15 @@ CARLOG_DB=./carlog.db CARLOG_TOKEN=... .venv/bin/uvicorn app:app --port 8080
 `deploy.sh` copies it to a Linux host over SSH (optionally into a Proxmox
 container) and installs `carlog.service`, which reads `CARLOG_TOKEN` from
 `/etc/carlog.env`. Set the target in `server/deploy.env` (gitignored):
-`CARLOG_SSH=root@your-host` and, for a container, `CARLOG_PCT=<id>`. Put it behind a reverse proxy
-with a password if it's reachable from the internet, but leave `POST
-/api/upload`, `/api/health` and `/api/live` open to the board (they check the
-token themselves).
+`CARLOG_SSH=root@your-host` and, for a container, `CARLOG_PCT=<id>`.
+
+Sign-in: put a bcrypt hash of the password in `/etc/carlog.passwd` (the format
+Caddy's `basicauth` uses, e.g. from `caddy hash-password`) and list your
+reverse proxy's IP in `CARLOG_AUTH_PROXIES` in `/etc/carlog.env`. Requests
+through the proxy then need a sign-in, which a device remembers for 10 years
+(sign out, or sign out all other devices, from settings); direct LAN requests
+stay open. The board's `POST /api/upload`, `/api/health` and `/api/live` use
+the token instead.
 
 ## Adding another car
 

@@ -74,8 +74,9 @@ static esp_http_client_handle_t make_client(const char *path, int timeout_ms)
     return c;
 }
 
-// The server answers 202 when the dashboard wants something from the car:
-// {"scan": true} for "Scan now", {"clear": "engine"|"all"} for "Clear codes".
+// Every reply carries the dashboard's "led" setting. The server answers 202 when
+// the dashboard wants something from the car: {"scan": true} for "Scan now",
+// {"clear": "engine"|"all"} for "Clear codes".
 static void post_live()
 {
     static char json[1024];
@@ -91,9 +92,17 @@ static void post_live()
         return;
     }
     esp_http_client_fetch_headers(c);
-    if (esp_http_client_get_status_code(c) == 202) {
-        char resp[160] = {};
+    int status = esp_http_client_get_status_code(c);
+    char resp[192] = {};
+    if (status == 200 || status == 202) {
         esp_http_client_read(c, resp, sizeof(resp) - 1);
+        if (strstr(resp, "\"led\":false")) {
+            led_set_enabled(false);
+        } else if (strstr(resp, "\"led\":true")) {
+            led_set_enabled(true);
+        }
+    }
+    if (status == 202) {
         if (strstr(resp, "\"scan\":true")) {
             scan_requested.store(true);
         }

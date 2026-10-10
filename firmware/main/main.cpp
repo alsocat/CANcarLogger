@@ -71,7 +71,7 @@ static void rollback_watchdog(void *)
 static esp_err_t info_handler(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    static char can[512], pwr[256], body[1280];
+    static char can[512], pwr[384], body[1408];
     power_status(pwr, sizeof(pwr));
     char sha[9];
     esp_app_get_elf_sha256(sha, sizeof(sha));

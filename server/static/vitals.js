@@ -1,88 +1,10 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car vitals</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M4 20a12 12 0 0 1 24 0' fill='none' stroke='%233987e5' stroke-width='4' stroke-linecap='round'/><path d='M16 20l6-7' stroke='%23d95926' stroke-width='3' stroke-linecap='round'/></svg>">
-<link rel="stylesheet" href="/static/style.css">
-<style>
-  .gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-  .gauges .card { display: flex; flex-direction: column; align-items: center; padding-bottom: 8px; }
-  .gauges .gauge-wrap { width: 100%; max-width: 260px; }
-  .gauges .eyebrow { align-self: flex-start; }
-  .vitals { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-  .vital { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .vital .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .vital .v { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
-  .vital .u { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin-left: 3px; }
-  .vital .sub { font-size: 12px; color: var(--text-muted); min-height: 17px; }
-  .vital svg.spark { width: 100%; height: 34px; display: block; margin-top: 6px; }
-  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
-  .status i { width: 14px; height: 14px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 10px; font-weight: 800; color: #fff; }
-  .status.good i { background: var(--good); }
-  .status.warning i { background: var(--warning); color: #111; }
-  .status.critical i { background: var(--critical); }
-  .status.info i { background: var(--text-muted); }
-  .vital.critical { border-color: var(--critical); }
-  .vital.warning { border-color: var(--warning); }
-  .bars { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-  .bars .bar-kv { border: 0; padding: 0; }
-  .bars .meter { max-width: none; }
-  .bars b { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
-  .offline { text-align: center; padding: 48px 16px; }
-  .offline h2 { justify-content: center; font-size: 18px; margin-bottom: 6px; }
-  a.back { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
-  a.back:hover { color: var(--text-primary); }
-  @media (max-width: 720px) {
-    .gauges { gap: 8px; }
-    .gauges .card { padding: 12px 8px 4px; }
-    .gauges .eyebrow { font-size: 10px; }
-    .vitals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .vital .v { font-size: 24px; }
-  }
-  @media (max-width: 380px) { .vitals { grid-template-columns: 1fr; } }
-</style>
-</head>
-<body>
-<div class="app">
-  <header class="topbar">
-    <div class="brand">
-      <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><path d="M4 22a12 12 0 0 1 24 0" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/><path d="M16 22l6-7" stroke="var(--series-2)" stroke-width="3" stroke-linecap="round"/></svg>
-      <div>
-        <div class="car-name" id="carName">Vitals</div>
-        <a class="back" href="/">← Dashboard</a>
-      </div>
-    </div>
-    <div class="topbar-right">
-      <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">connecting…</span></span>
-    </div>
-  </header>
-
-  <section class="card offline" id="offline" hidden>
-    <h2>Car not connected</h2>
-    <p class="muted" id="offlineText">Vitals appear when the ignition is on and the car is on home WiFi.</p>
-  </section>
-
-  <div id="liveArea" hidden>
-    <section class="gauges">
-      <div class="card"><div class="eyebrow">Speed</div><div class="gauge-wrap" id="gSpeed"></div></div>
-      <div class="card"><div class="eyebrow">Engine speed</div><div class="gauge-wrap" id="gRpm"></div></div>
-      <div class="card"><div class="eyebrow">Boost</div><div class="gauge-wrap" id="gBoost"></div></div>
-    </section>
-    <section class="vitals" id="vitals" style="margin-top:16px"></section>
-  </div>
-</div>
-<div class="tooltip" id="tooltip" hidden></div>
-<script src="/static/car.js"></script>
-<script src="/static/charts.js"></script>
-<script>
+// Live tab: gauges and vital tiles with 2-minute sparklines, fed by the
+// dashboard's /api/live poll (app.js calls Vitals.render). Loaded before app.js.
+(() => {
 const $ = id => document.getElementById(id);
-try { const t = localStorage.getItem("carlog-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
-
-const gSpeed = Charts.gauge($("gSpeed"), { min: 0, max: 160, unit: "mph" });
-const gRpm = Charts.gauge($("gRpm"), { min: 0, max: 7000, unit: "rpm", redline: 6500, fmt: v => Math.round(v / 10) * 10 });
-const gBoost = Charts.gauge($("gBoost"), { min: -15, max: 25, unit: "psi", fmt: v => (v > 0 ? "+" : "") + v.toFixed(1) });
+const vSpeed = Charts.gauge($("vSpeed"), { min: 0, max: 160, unit: "mph" });
+const vRpm = Charts.gauge($("vRpm"), { min: 0, max: 7000, unit: "rpm", redline: 6500, fmt: v => Math.round(v / 10) * 10 });
+const vBoost = Charts.gauge($("vBoost"), { min: -15, max: 25, unit: "psi", fmt: v => (v > 0 ? "+" : "") + v.toFixed(1) });
 
 // ---- status rules: each returns [level, label] or null ----
 const S = (level, label) => [level, label];
@@ -189,50 +111,29 @@ function renderTiles(l) {
   }
 }
 
-function ago(s) {
-  if (s < 90) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return `${Math.round(s / 86400)} d ago`;
-}
 
-async function poll() {
-  try {
-    const l = await fetch("/api/live").then(r => r.json());
-    $("statusPill").classList.toggle("on", l.online);
-    $("offline").hidden = l.online;
-    $("liveArea").hidden = !l.online;
-    if (!l.online) {
-      $("statusText").textContent = l.age_s != null ? `seen ${ago(l.age_s)}` : "car offline";
-      return;
-    }
-    $("statusText").textContent = l.state === "recording" ? "engine running · live"
-      : l.state === "engine off" ? "ignition on · engine off" : l.state;
-    const running = l.rpm > 0;
-    gSpeed(l.mph);
-    gRpm(l.rpm);
-    gBoost(running ? l.boost_psi : null);
-    renderTiles(l);
-  } catch {
-    $("statusText").textContent = "server unreachable";
-  }
-}
-
-fetch("/api/summary").then(r => r.json()).then(s => {
-  $("carName").textContent = `${s.settings.car_name} vitals`;
-  document.title = `${s.settings.car_name} · vitals`;
-  avgMpg = s.last30.mpg ?? s.lifetime.mpg;
-}).catch(() => {});
-async function loadHealth() {
+let healthTimer = 0;
+async function loadVitalsHealth() {
   try {
     const h = await fetch("/api/health").then(r => r.json());
     if (h.latest) health = { mil: h.latest.mil, count: h.latest.modules.reduce((a, m) => a + m.codes.length, 0) };
   } catch {}
 }
-loadHealth();
-setInterval(loadHealth, 60000);
-poll();
-setInterval(poll, 500);
-</script>
-</body>
-</html>
+
+window.Vitals = {
+  render(l) {
+    $("vOffline").hidden = l.online;
+    $("vLiveArea").hidden = !l.online;
+    if (!l.online) {
+      $("vOfflineText").textContent = "Vitals appear when the ignition is on and the car is on home WiFi.";
+      return;
+    }
+    if (Date.now() - healthTimer > 60000) { healthTimer = Date.now(); loadVitalsHealth(); }
+    vSpeed(l.mph);
+    vRpm(l.rpm);
+    vBoost(l.rpm > 0 ? l.boost_psi : null);
+    renderTiles(l);
+  },
+  setAvgMpg(v) { avgMpg = v; },
+};
+})();

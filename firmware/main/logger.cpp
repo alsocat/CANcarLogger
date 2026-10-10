@@ -45,6 +45,8 @@ uint32_t g_boot_id = 0;
 #define SCAN_EVERY_KM 480  // ~300 mi
 
 std::atomic<bool> scan_requested{false};
+// Health scan progress for the dashboard: requests done / total, 0 total = not scanning
+static std::atomic<int> scan_step{0}, scan_steps{0};
 std::atomic<int> clear_requested{0};
 char clear_target[16], clear_dtc[8];
 static char clear_buf[96] = "";  // outcome of the last clear request, for the live view
@@ -455,6 +457,8 @@ static void health_scan(const std::string &extra = "")
     static uint8_t b[640];
     std::string js = "{\"modules\":[";
     int64_t t0 = esp_timer_get_time();
+    scan_step = 0;
+    scan_steps = (is_vw ? sizeof(MODULES) / sizeof(MODULES[0]) + 6 : 2 * 3 + 8);
     bool first = true;
     // Modules often answer DTC reads with "response pending" first;
     // can_request keeps waiting for the real answer.
@@ -471,6 +475,7 @@ static void health_scan(const std::string &extra = "")
             static const char *modes[] = {"03", "07", "0A"};
             for (const char *mode : modes) {
                 int n = uds(mode, b, sizeof(b), 2000, m.tx, m.rx);
+                scan_step++;
                 js += ",\"obd";
                 js += mode;
                 js += "\":\"";
@@ -485,6 +490,7 @@ static void health_scan(const std::string &extra = "")
             break;
         }
         int n = uds("19020D", b, sizeof(b), 3000, m.tx, m.rx);
+        scan_step++;
         js += first ? "{" : ",{";
         first = false;
         js += "\"name\":\"";
@@ -499,12 +505,14 @@ static void health_scan(const std::string &extra = "")
     }
     js += "],\"pid01\":\"";
     int n = uds("0101", b, sizeof(b));
+    scan_step++;
     append_hex(js, b, n > 0 ? n : 0);
     js += "\",\"mode06\":[";
     // Misfire monitors: A1 = all cylinders, A2.. = cylinder 1.. (up to 6)
     const char *mids[] = {"06A1", "06A2", "06A3", "06A4", "06A5", "06A6", "06A7"};
     for (int i = 0; i < (is_vw ? 5 : 7); i++) {
         n = uds(mids[i], b, sizeof(b));
+        scan_step++;
         js += i ? ",\"" : "\"";
         append_hex(js, b, n > 0 ? n : 0);
         js += "\"";
@@ -538,6 +546,7 @@ static void health_scan(const std::string &extra = "")
         rename(tmp, path);
         pending_trips.fetch_add(1);
     }
+    scan_steps = 0;
     ESP_LOGI(TAG, "health scan: %u bytes in %lld ms", (unsigned)js.size(),
              (long long)(esp_timer_get_time() - t0) / 1000);
 }
@@ -792,7 +801,8 @@ static void end_trip()
 
 bool logger_live_json(char *out, size_t len)
 {
-    if (!live_lock || esp_timer_get_time() - live_updated_us > 3000000) {
+    // Values go stale during a health scan, but keep reporting its progress
+    if (!live_lock || (esp_timer_get_time() - live_updated_us > 3000000 && !scan_steps)) {
         return false;
     }
     xSemaphoreTake(live_lock, portMAX_DELAY);
@@ -805,14 +815,16 @@ bool logger_live_json(char *out, size_t len)
              "\"abs_load\":%.1f,\"lambda\":%.3f,\"stft\":%.1f,\"ltft\":%.1f,\"timing\":%.1f,"
              "\"fuel_level\":%.1f,\"ambient_c\":%d,\"voltage\":%.2f,\"cat_c\":%.0f,"
              "\"fuel_status\":%u,\"fuel_rate_ml_s_per_l\":%.4f,\"trip_dist_m\":%.0f,"
-             "\"trip_fuel_ml_per_l\":%.2f,\"odo_km\":%lu,\"maf\":%.2f,\"fuel_abs\":%d,\"vin\":\"%s\",\"clear_note\":\"%s\"}",
+             "\"trip_fuel_ml_per_l\":%.2f,\"odo_km\":%lu,\"maf\":%.2f,\"fuel_abs\":%d,\"vin\":\"%s\",\"clear_note\":\"%s\","
+             "\"scan\":\"%s\",\"scan_step\":%d,\"scan_steps\":%d}",
              logger_state(), r.rpm, r.speed_kph, r.coolant - 40, r.iat - 40, r.map_kpa, r.baro_kpa,
              r.throttle * 100 / 255.0, r.pedal * 100 / 255.0, r.load * 100 / 255.0,
              r.abs_load * 100 / 255.0, r.lambda * 2 / 65536.0, (r.stft - 128) * 100 / 128.0,
              (r.ltft - 128) * 100 / 128.0, r.timing / 2.0 - 64, r.fuel_level * 100 / 255.0, r.ambient - 40,
              r.voltage_mv / 1000.0, r.cat_temp / 10.0 - 40, r.fuel_status, rate,
              state == ST_TRIP ? dist_m : 0, state == ST_TRIP ? fuel_ml : 0, (unsigned long)r.odo_km, live_maf,
-             supported(0x10) ? 1 : 0, vin, clear_buf);
+             supported(0x10) ? 1 : 0, vin, clear_buf,
+             scan_steps ? "running" : scan_requested ? "queued" : "", scan_step.load(), scan_steps.load());
     return true;
 }
 
@@ -916,6 +928,12 @@ static void logger_task(void *)
 
         if (clear_requested.load()) {
             handle_clear_request(true);  // refused: never while the engine runs
+        }
+        // "Scan now" with the engine running: only while stopped, since the
+        // scan pauses logging for a few seconds.
+        if (live.speed_kph == 0 && scan_requested.exchange(false)) {
+            maybe_health_scan(true);
+            last_good_us = rpm_zero_since = last_fast_us = esp_timer_get_time();
         }
         // Fast group every loop: rpm, speed, abs load, lambda, fuel status, pedal
         uint16_t prev_speed = live.speed_kph;

@@ -1,17 +1,19 @@
 """carlog: receives trips from the ESP32 OBD logger and serves the fuel-economy dashboard."""
 
+import hashlib
 import json
 import math
 import os
 import sqlite3
 import statistics
+import secrets
 import struct
 import time
 from contextlib import closing
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import analysis
@@ -19,6 +21,13 @@ import analysis
 DB_PATH = os.environ.get("CARLOG_DB", "/var/lib/carlog/carlog.db")
 TOKEN = os.environ.get("CARLOG_TOKEN", "")
 STATIC = Path(__file__).parent / "static"
+# Sign-in: a bcrypt hash (the same format Caddy's basicauth uses) in this
+# file. Requests from the reverse proxies listed in CARLOG_AUTH_PROXIES must
+# be signed in; direct LAN requests are not. No hash file = no sign-in.
+PASSWORD_FILE = os.environ.get("CARLOG_PASSWORD_FILE", "/etc/carlog.passwd")
+AUTH_PROXIES = {x.strip() for x in os.environ.get("CARLOG_AUTH_PROXIES", "").split(",") if x.strip()}
+SESSION_COOKIE = "carlog_session"
+SESSION_MAX_AGE = 10 * 365 * 86400  # "remember this device"
 
 HEADER = struct.Struct("<IB3xIIqqHH")  # matches TripHeader in firmware shared.h
 # Record layouts by file version (matches Record in firmware shared.h)
@@ -40,6 +49,7 @@ DEFAULT_SETTINGS = {
     "fuel_price": 4.00,
     "calibration_mode": "auto",  # auto | manual
     "calibration_manual": 1.0,
+    "board_led": True,  # the logger board's status light; sent to it with every live reply
 }
 
 app = FastAPI(title="carlog")
@@ -82,7 +92,7 @@ def init_db():
         c.executescript("""
         CREATE TABLE IF NOT EXISTS trips (
             id INTEGER PRIMARY KEY,
-            device_trip_id INTEGER, car TEXT NOT NULL DEFAULT '',
+            device_trip_id INTEGER, car TEXT NOT NULL DEFAULT '', device TEXT NOT NULL DEFAULT '',
             start_ts REAL, ts_approx INTEGER,
             duration_s REAL, distance_m REAL, fuel_raw REAL,
             idle_s REAL, idle_fuel_raw REAL, moving_s REAL,
@@ -90,14 +100,17 @@ def init_db():
             fuel_level_start REAL, fuel_level_end REAL,
             hard_accel INTEGER, hard_brake INTEGER,
             bands TEXT, uploaded_at REAL, raw BLOB, odo_start_km REAL, odo_end_km REAL,
-            UNIQUE(car, device_trip_id));
+            UNIQUE(car, device, device_trip_id));
         CREATE TABLE IF NOT EXISTS fillups (
             id INTEGER PRIMARY KEY, ts REAL, gallons REAL, price REAL,
             odometer_mi REAL, full INTEGER, note TEXT);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS health_scans (
             id INTEGER PRIMARY KEY, device_scan_id INTEGER, car TEXT NOT NULL DEFAULT '',
-            ts REAL, ts_approx INTEGER, data TEXT, uploaded_at REAL, UNIQUE(car, device_scan_id));
+            device TEXT NOT NULL DEFAULT '',
+            ts REAL, ts_approx INTEGER, data TEXT, uploaded_at REAL, UNIQUE(car, device, device_scan_id));
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY, created REAL, last_seen REAL, agent TEXT);
         CREATE TABLE IF NOT EXISTS maintenance (
             id INTEGER PRIMARY KEY, ts REAL, odometer_mi REAL, kind TEXT, cost REAL, note TEXT);
         """)
@@ -123,6 +136,7 @@ def init_db():
             # 1 = fuel_raw is plain mL (cars with a MAF sensor), not mL per litre
             c.execute("ALTER TABLE trips ADD COLUMN fuel_abs INTEGER DEFAULT 0")
         migrate_multi_car(c)
+        migrate_per_device(c)
 
 
 def migrate_multi_car(c):
@@ -145,6 +159,32 @@ def migrate_multi_car(c):
         if "car" not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
             c.execute(f"ALTER TABLE {table} ADD COLUMN car TEXT NOT NULL DEFAULT ''")
             c.execute(f"UPDATE {table} SET car=?", (first,))
+
+
+def migrate_per_device(c):
+    """Board counters restart when a board is replaced (or erased), so ids are
+    only unique per board (X-Device MAC). Older rows get device ''."""
+    for table, idcol in (("trips", "device_trip_id"), ("health_scans", "device_scan_id")):
+        sql = c.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()["sql"]
+        if " device TEXT" in sql:
+            continue
+        new_sql = sql.replace(f"UNIQUE(car, {idcol})", f"device TEXT NOT NULL DEFAULT '', UNIQUE(car, device, {idcol})")
+        cols = ",".join(r["name"] for r in c.execute(f"PRAGMA table_info({table})"))
+        c.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+        c.execute(new_sql)
+        c.execute(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM {table}_old")
+        c.execute(f"DROP TABLE {table}_old")
+
+
+def board_order(table, idcol, desc=""):
+    """ORDER BY for rows aliased t: board by board (in the order they first
+    reported), then each board's own counter, since timestamps can be guesses."""
+    return (f"(SELECT min(uploaded_at) FROM {table} u WHERE u.car=t.car AND u.device=t.device){desc}, "
+            f"t.{idcol}{desc}")
+
+
+def device_of(request: Request):
+    return (request.headers.get("x-device") or "").strip()
 
 
 def primary_car():
@@ -386,6 +426,117 @@ def temp_f(c):
 
 # ---------- API ----------
 
+# ---------- sign-in ----------
+
+def password_hash():
+    try:
+        return Path(PASSWORD_FILE).read_text().strip().encode()
+    except OSError:
+        return None
+
+
+def token_hash(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def via_proxy(request: Request):
+    return bool(request.client) and request.client.host in AUTH_PROXIES
+
+
+def signed_in(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return False
+    with closing(db()) as c, c:
+        row = c.execute("SELECT last_seen FROM sessions WHERE token_hash=?", (token_hash(token),)).fetchone()
+        if not row:
+            return False
+        if time.time() - row["last_seen"] > 3600:
+            c.execute("UPDATE sessions SET last_seen=? WHERE token_hash=?", (time.time(), token_hash(token)))
+    return True
+
+
+# The board's own uploads carry X-Token instead (checked in each handler).
+DEVICE_PATHS = {("POST", "/api/upload"), ("POST", "/api/health"), ("POST", "/api/live")}
+OPEN_PREFIXES = ("/login", "/static/")
+
+
+@app.middleware("http")
+async def require_sign_in(request: Request, call_next):
+    path = request.url.path
+    if (not via_proxy(request) or not password_hash() or (request.method, path) in DEVICE_PATHS
+            or path.startswith(OPEN_PREFIXES) or signed_in(request)):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "sign in first"}, status_code=401)
+    return RedirectResponse(f"/login?next={path}", status_code=303)
+
+
+LOGIN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in · carlog</title>
+<link rel="stylesheet" href="/static/style.css"></head><body>
+<form class="card login" method="post" action="/login">
+<h2>carlog</h2><p class="muted small">Sign in once; this device stays signed in.</p>
+{error}<label>Password<input type="password" name="password" autocomplete="current-password" autofocus required></label>
+<input type="hidden" name="next" value="{next}"><button class="btn" type="submit">Sign in</button></form></body></html>"""
+_failed = {}  # ip -> recent failed attempt times
+
+
+@app.get("/login")
+def login_page(next: str = "/"):
+    nxt = next if next.startswith("/") and not next.startswith("//") else "/"
+    return HTMLResponse(LOGIN_PAGE.format(error="", next=nxt.replace('"', "")))
+
+
+@app.post("/login")
+async def login(request: Request):
+    import bcrypt
+    form = dict(await request.form())
+    nxt = str(form.get("next") or "/")
+    nxt = nxt if nxt.startswith("/") and not nxt.startswith("//") else "/"
+    ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "").split(",")[0].strip()
+    now = time.time()
+    recent = [t for t in _failed.get(ip, []) if now - t < 900]
+    _failed[ip] = recent
+    if len(recent) >= 10:
+        return HTMLResponse(LOGIN_PAGE.format(error='<p class="small" style="color:var(--critical)">Too many tries. Wait 15 minutes.</p>',
+                                              next=nxt), status_code=429)
+    h = password_hash()
+    if not h or not bcrypt.checkpw(str(form.get("password") or "").encode(), h):
+        recent.append(now)
+        return HTMLResponse(LOGIN_PAGE.format(error='<p class="small" style="color:var(--critical)">Wrong password.</p>',
+                                              next=nxt), status_code=401)
+    token = secrets.token_urlsafe(32)
+    with closing(db()) as c, c:
+        c.execute("INSERT INTO sessions (token_hash, created, last_seen, agent) VALUES (?,?,?,?)",
+                  (token_hash(token), now, now, request.headers.get("user-agent", "")[:200]))
+    resp = RedirectResponse(nxt, status_code=303)
+    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax",
+                    secure=via_proxy(request))
+    return resp
+
+
+@app.get("/api/sessions")
+def session_info(request: Request):
+    with closing(db()) as c:
+        n = c.execute("SELECT count(*) FROM sessions").fetchone()[0]
+    return {"enabled": bool(password_hash()) and via_proxy(request), "devices": n}
+
+
+@app.post("/api/logout")
+def logout(request: Request, everywhere_else: bool = False):
+    token = request.cookies.get(SESSION_COOKIE) or ""
+    with closing(db()) as c, c:
+        if everywhere_else:
+            c.execute("DELETE FROM sessions WHERE token_hash != ?", (token_hash(token),))
+        else:
+            c.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash(token),))
+    resp = JSONResponse({"status": "ok"})
+    if not everywhere_else:
+        resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
 def check_token(request: Request):
     if TOKEN and request.headers.get("x-token") != TOKEN:
         raise HTTPException(403, "bad token")
@@ -408,14 +559,15 @@ async def upload(request: Request):
     the finished file replaces it when it arrives."""
     check_token(request)
     car = car_of(request)
+    dev = device_of(request)
     body = await request.body()
     partial = request.headers.get("x-partial") == "1"
     offset = int(request.headers.get("x-offset") or 0)
     with closing(db()) as c, c:
         existing = None
         if offset:
-            existing = c.execute("SELECT * FROM trips WHERE car=? AND device_trip_id=?",
-                                 (car, int(request.headers.get("x-trip-id") or -1))).fetchone()
+            existing = c.execute("SELECT * FROM trips WHERE car=? AND device=? AND device_trip_id=?",
+                                 (car, dev, int(request.headers.get("x-trip-id") or -1))).fetchone()
             if not existing or not existing["partial"] or len(existing["raw"]) < offset:
                 have = len(existing["raw"]) if existing and existing["partial"] else 0
                 return JSONResponse({"status": "resend", "have": have}, status_code=416)
@@ -427,8 +579,8 @@ async def upload(request: Request):
         except (ValueError, struct.error) as e:
             raise HTTPException(400, str(e))
         if existing is None:
-            existing = c.execute("SELECT * FROM trips WHERE car=? AND device_trip_id=?",
-                                 (car, hdr["trip_id"])).fetchone()
+            existing = c.execute("SELECT * FROM trips WHERE car=? AND device=? AND device_trip_id=?",
+                                 (car, dev, hdr["trip_id"])).fetchone()
         if existing and not existing["partial"]:
             return JSONResponse({"status": "duplicate"}, status_code=409)
         if existing and partial and len(raw) < len(existing["raw"]):
@@ -444,7 +596,7 @@ async def upload(request: Request):
                 epoch, approx = now - summary["duration_s"], 1
         bands = json.dumps(summary.pop("bands"))
         perf = json.dumps(analysis.perf_runs(recs))
-        cols = {"device_trip_id": hdr["trip_id"], "car": car, "fuel_abs": int(hdr["fuel_abs"]), "start_ts": epoch, "ts_approx": approx, "bands": bands,
+        cols = {"device_trip_id": hdr["trip_id"], "car": car, "device": dev, "fuel_abs": int(hdr["fuel_abs"]), "start_ts": epoch, "ts_approx": approx, "bands": bands,
                 "uploaded_at": now, "raw": raw, "perf": perf, "partial": 1 if partial else 0, **summary}
         if existing:
             c.execute(f"UPDATE trips SET {','.join(k + '=?' for k in cols)} WHERE id=?",
@@ -468,17 +620,19 @@ async def upload_health(request: Request):
     if magic != HEALTH_MAGIC:
         raise HTTPException(400, "not a health scan")
     car = car_of(request)
+    dev = device_of(request)
     now = time.time()
     epoch = int(request.headers.get("x-start-epoch") or 0) or start_epoch
     with closing(db()) as c, c:
-        if c.execute("SELECT 1 FROM health_scans WHERE car=? AND device_scan_id=?", (car, scan_id)).fetchone():
+        if c.execute("SELECT 1 FROM health_scans WHERE car=? AND device=? AND device_scan_id=?",
+                     (car, dev, scan_id)).fetchone():
             return JSONResponse({"status": "duplicate"}, status_code=409)
-        c.execute("INSERT INTO health_scans (device_scan_id, car, ts, ts_approx, data, uploaded_at) VALUES (?,?,?,?,?,?)",
-                  (scan_id, car, epoch or now, 0 if epoch else 1, json.dumps(data), now))
+        c.execute("INSERT INTO health_scans (device_scan_id, car, device, ts, ts_approx, data, uploaded_at) "
+                  "VALUES (?,?,?,?,?,?,?)", (scan_id, car, dev, epoch or now, 0 if epoch else 1, json.dumps(data), now))
     scan_req(car).update(at=None, sent=None)
     if "clear" in data:
         clear_req(car).update(at=None, scope=None, target=None, dtc=None, sent=None,
-                              **clear_outcome(data["clear"]))
+                              **clear_outcome(data["clear"], analysis.decode_scan(data)))
     return {"status": "ok"}
 
 
@@ -486,7 +640,7 @@ async def upload_health(request: Request):
 def get_health(car: str = ""):
     car = car_key(car)
     with closing(db()) as c:
-        rows = c.execute("SELECT * FROM health_scans WHERE car=? ORDER BY device_scan_id", (car,)).fetchall()
+        rows = c.execute(f"SELECT * FROM health_scans t WHERE car=? ORDER BY {board_order('health_scans', 'device_scan_id')}", (car,)).fetchall()
     if not rows:
         return {"scans": 0, "latest": None, "request": scan_status(car)}
     # first/last time each code was seen across all scans
@@ -572,7 +726,7 @@ async def post_live(request: Request):
     note = st["data"].get("clear_note") or ""
     if clr["sent"] and note.startswith("refused") and clr["at"]:
         clr.update(at=None, scope=None, note="The car refused: the engine was running. Switch it off (ignition on) and try again.")
-    reply = {"status": "ok"}
+    reply = {"status": "ok", "led": bool(get_settings(car)["board_led"])}
     if req["at"] and not req.get("sent"):
         req["sent"] = time.time()
         reply["scan"] = True
@@ -583,7 +737,7 @@ async def post_live(request: Request):
             reply["target"] = clr["target"]
         if clr["dtc"]:
             reply["dtc"] = clr["dtc"]
-    if len(reply) > 1:
+    if "scan" in reply or "clear" in reply:
         return JSONResponse(reply, status_code=202)  # board acts on it
     return reply
 
@@ -601,8 +755,11 @@ def scan_status(car):
     clr = clear_req(car)
     online = st["data"] is not None and time.time() - st["received"] < 10
     running = online and (st["data"].get("rpm") or 0) > 0
+    d = st["data"] if online else {}
     return {"requested_at": req["at"], "sent_at": req.get("sent"), "car_online": online,
-            "engine_running": running,
+            "engine_running": running, "moving": (d.get("speed_kph") or 0) > 0,
+            # board's side of a scan: "queued", "running" or "" (older firmware: None)
+            "board_scan": d.get("scan"), "scan_step": d.get("scan_step"), "scan_steps": d.get("scan_steps"),
             "clear": {"requested_at": clr["at"], "scope": clr["scope"], "target": clr["target"], "dtc": clr["dtc"],
                       "sent_at": clr["sent"], "note": clr["note"], "offer_module": clr["offer_module"]}}
 
@@ -612,7 +769,7 @@ NRC_TEXT = {0x31: "it doesn't accept single codes", 0x12: "it doesn't accept sin
             0x7F: "it won't clear in this session", 0x11: "it doesn't support clearing over this connection"}
 
 
-def clear_outcome(clear):
+def clear_outcome(clear, scan=None):
     """Turn the board's per-module clear results into a message for the
     dashboard, and when a single-code clear was refused, offer the module."""
     results = clear.get("results", [])
@@ -625,6 +782,12 @@ def clear_outcome(clear):
     name = analysis.MODULE_NAMES.get(r["name"], r["name"])
     resp = bytes.fromhex(r.get("resp") or "")
     why = NRC_TEXT.get(resp[2], f"error {resp[2]:02X}") if len(resp) >= 3 and resp[0] == 0x7F else "no answer"
+    # A module can refuse while one of its faults is failing right now
+    mod = next((m for m in (scan or {}).get("modules", []) if m["name"] == r["name"]), None)
+    active = [c["code"] for c in (mod or {}).get("codes", []) if c.get("active")]
+    if active and len(resp) >= 3 and resp[2] == 0x22:
+        why = (f"{', '.join(active)} {'is' if len(active) == 1 else 'are'} failing right now, so it won't clear "
+               "until the fault itself is fixed")
     if clear.get("scope") == "code":
         return {"note": f"{name} didn't clear code {clear.get('dtc')}: {why}. You can clear the whole module instead.",
                 "offer_module": r["name"]}
@@ -648,7 +811,7 @@ async def request_clear(request: Request, car: str = ""):
         raise HTTPException(400, "not confirmed")
     if scope in ("module", "code"):
         with closing(db()) as c:
-            row = c.execute("SELECT data FROM health_scans WHERE car=? ORDER BY device_scan_id DESC LIMIT 1",
+            row = c.execute(f"SELECT data FROM health_scans t WHERE car=? ORDER BY {board_order('health_scans', 'device_scan_id', ' DESC')} LIMIT 1",
                             (car,)).fetchone()
         latest = analysis.decode_scan(json.loads(row["data"])) if row else {"modules": []}
         mod = next((m for m in latest["modules"] if m["name"] == target), None)
@@ -852,7 +1015,8 @@ def detect_fillups(car=""):
         # Order by the board's trip counter: start times can be guesses (clock
         # not set yet) and out of order, which would fake a fuel-level rise.
         trips = c.execute("SELECT id, start_ts, duration_s, fuel_level_start, fuel_level_end, "
-                          "odo_start_km, odo_end_km FROM trips WHERE car=? ORDER BY device_trip_id", (car,)).fetchall()
+                          f"odo_start_km, odo_end_km FROM trips t WHERE car=? ORDER BY {board_order('trips', 'device_trip_id')}",
+                          (car,)).fetchall()
         known = {r[0] for r in c.execute("SELECT trip_id FROM fillups WHERE trip_id IS NOT NULL")}
         manual = [r[0] for r in c.execute("SELECT ts FROM fillups WHERE source IS NOT 'auto' AND car=?", (car,))]
         for a, b in zip(trips, trips[1:]):
@@ -955,7 +1119,9 @@ async def put_settings(request: Request, car: str = ""):
         for k, v in body.items():
             if k not in DEFAULT_SETTINGS or (k == "vin" and not first):
                 continue
-            if k not in ("car_name", "calibration_mode", "vin"):
+            if k == "board_led":
+                v = bool(v)
+            elif k not in ("car_name", "calibration_mode", "vin"):
                 v = float(v)
             key = k if first else f"car:{car}:{k}"
             c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, json.dumps(v)))
@@ -972,7 +1138,7 @@ def index():
 
 @app.get("/vitals")
 def vitals_page():
-    return FileResponse(STATIC / "vitals.html")
+    return RedirectResponse("/#live")  # vitals moved into the dashboard's Live tab
 
 
 @app.get("/service")

@@ -27,8 +27,8 @@ menu "OBD WiFi Bridge"
         bool "Deep sleep while the car is off (board on always-on OBD power)"
         default y
     config OBD_VBAT_GPIO
-        int "GPIO with the battery voltage divider (ADC1: 1-10, -1 = none)"
-        default 1
+        int "GPIO with the battery voltage divider (ADC1: 1-10, -1 = none: wake on CAN only)"
+        default -1
     config OBD_VBAT_RATIO_X1000
         int "Divider ratio x1000 (1 MOhm over 220 kOhm = 5545)"
         default 5545

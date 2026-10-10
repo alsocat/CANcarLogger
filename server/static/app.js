@@ -1,5 +1,9 @@
 const $ = id => document.getElementById(id);
-const api = (path, opts) => fetch(path, opts).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+const api = (path, opts) => fetch(path, opts).then(r => {
+  if (r.status === 401) location.href = "/login?next=" + encodeURIComponent(location.pathname);  // signed out elsewhere
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+});
 
 const fmt = {
   mpg: v => v == null ? "—" : v.toFixed(1),
@@ -31,6 +35,7 @@ $("themeBtn").onclick = () => {
 async function loadSummary() {
   summary = await api("/api/summary");
   render(summary);
+  Vitals.setAvgMpg(summary.last30.mpg ?? summary.lifetime.mpg);  // for the fuel tile's range
 }
 
 function render(s) {
@@ -195,44 +200,51 @@ async function openTrip(id) {
 
 for (const b of document.querySelectorAll("[data-close]")) b.onclick = () => b.closest("dialog").close();
 
-// ---------- live ----------
-const gSpeed = Charts.gauge($("gSpeed"), { min: 0, max: 120, label: "Speed", unit: "mph" });
-const gRpm = Charts.gauge($("gRpm"), { min: 0, max: 7000, label: "RPM", unit: "rpm", redline: 6500, fmt: v => (v / 1000).toFixed(1) + "k" });
+// ---------- tabs ----------
+// The live card stays above the tabs (only shown while driving). #health etc.
+// in the URL picks the tab, so a reload or a shared link keeps it.
+const TABS = [...document.querySelectorAll("[data-tab]")].map(b => b.dataset.tab);
+function showTab(name, focus) {
+  if (!TABS.includes(name)) name = TABS[0];
+  for (const b of document.querySelectorAll("[data-tab]")) {
+    const on = b.dataset.tab === name;
+    b.setAttribute("aria-selected", on);
+    b.tabIndex = on ? 0 : -1;
+    if (on && focus) b.focus();
+  }
+  for (const p of document.querySelectorAll("[data-panel]")) p.hidden = p.dataset.panel !== name;
+}
+for (const b of document.querySelectorAll("[data-tab]")) {
+  b.onclick = () => { history.replaceState(null, "", "#" + b.dataset.tab); showTab(b.dataset.tab); };
+  b.onkeydown = e => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step) return;
+    const next = TABS[(TABS.indexOf(b.dataset.tab) + step + TABS.length) % TABS.length];
+    history.replaceState(null, "", "#" + next);
+    showTab(next, true);
+  };
+}
+addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
 
+// ---------- live ----------
+// The status pill in the top bar always; the Live tab's gauges and tiles
+// (vitals.js) every poll, twice a second while that tab is open.
 async function pollLive() {
   try {
     const l = await api("/api/live");
-    const pill = $("statusPill");
     const driving = l.online && l.state === "recording";
-    pill.classList.toggle("on", l.online);
-    $("live").hidden = !driving;
-    if (!l.online) {
-      $("statusText").textContent = l.age_s != null ? `parked · seen ${ago(l.age_s)}` : "car offline";
-      return;
-    }
-    if (!driving) {
-      $("statusText").textContent = l.state === "engine off" ? "connected · engine off" : `connected · ${l.state}`;
-      return;
-    }
-    $("statusText").textContent = l.state === "recording" ? "driving · live" : `live · ${l.state}`;
-    gSpeed(l.mph);
-    gRpm(l.rpm);
-    $("lInstant").textContent = l.instant_mpg == null ? (l.mph > 1 ? "∞" : "—") : Math.min(l.instant_mpg, 99).toFixed(1);
-    $("lTripMpg").textContent = fmt.mpg(l.trip_mpg);
-    $("lTripMi").textContent = l.trip_miles.toFixed(1);
-    $("lBoost").textContent = l.boost_psi == null ? "—" : `${l.boost_psi.toFixed(1)} psi`;
-    $("lCoolant").textContent = l.coolant_f == null ? "—" : `${Math.round(l.coolant_f)}°F`;
-    $("lIat").textContent = l.iat_f == null ? "—" : `${Math.round(l.iat_f)}°F`;
-    $("lVolt").textContent = `${l.voltage.toFixed(1)} V`;
-    $("lGph").textContent = `${l.gph.toFixed(2)} gal/h`;
-    $("lTrim").textContent = `${l.stft >= 0 ? "+" : ""}${l.stft.toFixed(0)}% / ${l.ltft >= 0 ? "+" : ""}${l.ltft.toFixed(0)}%`;
-    $("lPedal").style.width = l.pedal + "%";
-    $("lLoad").style.width = l.load + "%";
+    $("statusPill").classList.toggle("on", l.online);
+    $("liveDot").hidden = !driving;
+    Vitals.render(l);
+    $("statusText").textContent = !l.online ? (l.age_s != null ? `parked · seen ${agoSecs(l.age_s)}` : "car offline")
+      : driving ? "driving · live" : l.state === "engine off" ? "connected · engine off" : `connected · ${l.state}`;
   } catch {
     $("statusText").textContent = "server unreachable";
   }
+  setTimeout(pollLive, location.hash === "#live" ? 500 : 1000);
 }
-function ago(s) {
+function agoSecs(s) {
   if (s < 90) return "just now";
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
@@ -388,7 +400,13 @@ function renderScanBtn(r) {
   const b = $("scanBtn");
   const waiting = !!r.requested_at;
   b.disabled = waiting || !r.car_online;
-  b.textContent = waiting ? (r.sent_at ? "Scanning…" : "Waiting for car…") : "Scan now";
+  b.textContent = !waiting ? "Scan now"
+    : !r.sent_at ? "Sending to car…"
+    : r.board_scan === "running" ? `Scanning ${r.scan_step || 0}/${r.scan_steps}…`
+    : r.board_scan === "queued" ? (r.moving ? "Queued: runs when stopped" : "Starting scan…")
+    : r.board_scan === "" ? "Uploading results…"
+    : "Waiting for car…";
+  b.classList.toggle("busy", waiting);
   b.title = r.car_online ? "Read fault codes from every module now (about 15 s)" : "The car needs to be on and on home WiFi";
   clearTimeout(renderScanBtn.timer);
   if (waiting) renderScanBtn.timer = setTimeout(loadHealth, 3000);  // pick up the result as soon as it lands
@@ -456,6 +474,9 @@ async function loadHealth() {
   $("healthWhen").textContent = `scanned ${L.ts_approx ? "≈ " : ""}${fmt.when(L.ts)}${L.odometer_mi ? " · " + Math.round(L.odometer_mi).toLocaleString() + " mi" : ""}`;
   const codes = L.modules.flatMap(m => m.codes.map(c => ({ ...c, module: m.label })));
   const active = codes.filter(c => c.active || c.stored);
+  $("healthBadge").hidden = !codes.length;
+  $("healthBadge").textContent = codes.length;
+  $("healthBadge").title = `${codes.length} fault code${codes.length === 1 ? "" : "s"}`;
   const top = L.mil ? chip("critical", "Check engine light is on")
     : active.length ? chip("warning", `${codes.length} fault code${codes.length === 1 ? "" : "s"} stored`)
     : codes.length ? chip("info", `${codes.length} pending code${codes.length === 1 ? "" : "s"}`)
@@ -528,12 +549,22 @@ async function loadGears() {
 // ---------- settings ----------
 $("settingsBtn").onclick = () => {
   const f = $("setForm");
-  for (const [k, v] of Object.entries(summary?.settings ?? {})) if (f[k]) f[k].value = v;
+  for (const [k, v] of Object.entries(summary?.settings ?? {})) if (f[k]) f[k].type === "checkbox" ? f[k].checked = !!v : f[k].value = v;
   $("setDlg").showModal();
+  api("/api/sessions").then(s => {
+    $("setSession").hidden = !s.enabled;
+    $("setDevices").textContent = `Signed in on ${s.devices} device${s.devices === 1 ? "" : "s"}.`;
+  }).catch(() => {});
+};
+$("signOutBtn").onclick = async () => { await api("/api/logout", { method: "POST" }); location.href = "/login"; };
+$("signOutOthersBtn").onclick = async () => {
+  await api("/api/logout?everywhere_else=true", { method: "POST" });
+  $("setDevices").textContent = "Signed out everywhere else. This device stays signed in.";
 };
 $("setForm").onsubmit = async e => {
   e.preventDefault();
   const body = Object.fromEntries(new FormData(e.target));
+  body.board_led = e.target.board_led.checked;  // unchecked boxes aren't in FormData
   await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   $("setDlg").close();
   loadSummary();
@@ -547,5 +578,4 @@ loadFills();
 pollLive();
 const deep = location.hash.match(/trip=(\d+)/);
 if (deep) openTrip(+deep[1]);
-setInterval(pollLive, 1000);
 setInterval(loadSummary, 60000);

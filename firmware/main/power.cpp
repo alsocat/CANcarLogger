@@ -8,13 +8,17 @@
 //     If that keeps waking us without an ECU ever answering (noise, or a car
 //     that chats while parked) it's switched off for a while.
 //
-// Battery sense: car 12 V -- 1 MOhm --+-- 220 kOhm -- GND, junction -> the
-// OBD_VBAT_GPIO pin (+100 nF to GND). Without it only CAN activity can wake
-// the board, which isn't enough on cars whose OBD port is silent (VW).
+// Battery sense (optional): car 12 V -- 1 MOhm --+-- 220 kOhm -- GND, junction
+// -> the OBD_VBAT_GPIO pin (+100 nF to GND). Without it (OBD_VBAT_GPIO = -1)
+// only CAN activity wakes the board. VW's OBD port carries no messages, but
+// unlocking, opening a door or switching the ignition on puts a burst of
+// activity on it as the car wakes, which is enough.
 
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <sys/time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -34,14 +38,24 @@ static const char *TAG = "power";
 #define CAN_TX_GPIO GPIO_NUM_4
 #define CAN_RX_GPIO GPIO_NUM_5
 #define WAKE_VOLTS (CONFIG_OBD_WAKE_VOLTS_X10 / 10.0f)
-#define MIN_AWAKE_S 90         // after any wake, so a short stop doesn't bounce
-#define ECU_SILENT_S 120       // car counts as off this long after its last answer
+#define MIN_AWAKE_S 15         // after any wake, to give the ECU a chance to answer
+#define ECU_SILENT_S 15        // car counts as off this long after its last answer
 #define UPLOAD_GRACE_S 600     // longest we stay up past that to finish uploads
 #define NOISE_WAKES_MAX 3      // CAN wakes in a row with no ECU answer...
 #define NOISE_BACKOFF_SLEEPS 90  // ...turn CAN wake off for this many sleeps (~30 min)
+#define VSENSE_FITTED (CONFIG_OBD_VBAT_GPIO >= 1 && CONFIG_OBD_VBAT_GPIO <= 10)
 
 RTC_DATA_ATTR static uint32_t rtc_sleeps, rtc_checks, rtc_can_wakes, rtc_noise_streak, rtc_can_off_until;
 RTC_DATA_ATTR static char rtc_last_reason[48];
+RTC_DATA_ATTR static int64_t rtc_sleep_at_ms;  // wall clock (RTC timer) when we last went to sleep
+static int64_t slept_ms = -1;                  // how long the last sleep lasted
+
+static int64_t clock_ms()
+{
+    timeval tv;
+    gettimeofday(&tv, nullptr);
+    return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
 // The divider reading has matched the ECU's own battery voltage (PID 42).
 // Until then we never sleep: an empty or floating pin could read anything,
 // and a board that can't tell the engine started would miss whole trips.
@@ -104,13 +118,41 @@ float battery_volts()
 
 // ---------- sleeping ----------
 
+// Going to sleep puts a glitch on CAN RX about 0.7 s later (seen on the
+// DevKitC + fake SN65HVD230 with the 5 V buck), which would wake us at once.
+// So the first few seconds are slept with CAN wake off ("settling"), then a
+// ~0.3 s boot arms it and sleeps again.
+//
+// Right after a drive the car stays awake for a while, and switching it back
+// on then makes no burst on the OBD CAN, so CAN wake would miss a quick
+// restart. For RESTART_WINDOW_S after the ECU last answered (boards without
+// battery sense) we sleep on a PROBE_S timer instead and ask the ECU on each
+// ~0.3 s boot, without WiFi. The settle boot asks too, in case the ignition
+// came on during those seconds.
+#define SETTLE_S 5
+#define PROBE_S 10
+#define RESTART_WINDOW_S 600
+RTC_DATA_ATTR static bool rtc_settling, rtc_probing;
+RTC_DATA_ATTR static uint32_t rtc_settles, rtc_probes;
+RTC_DATA_ATTR static int64_t rtc_probe_until_ms;  // wall clock end of the restart window
+
+static void enter_sleep(bool settle);
+
 static void sleep_now(const char *reason)
+{
+    snprintf(rtc_last_reason, sizeof(rtc_last_reason), "%s", reason);
+    rtc_sleeps++;
+    enter_sleep(true);
+}
+
+static void enter_sleep(bool settle)
 {
     float v = battery_volts();
     bool vsense = !std::isnan(v);
     bool can_wake = rtc_sleeps >= rtc_can_off_until || !vsense;
-    snprintf(rtc_last_reason, sizeof(rtc_last_reason), "%s", reason);
-    rtc_sleeps++;
+    rtc_sleep_at_ms = clock_ms();
+    rtc_probing = !VSENSE_FITTED && rtc_sleep_at_ms < rtc_probe_until_ms;
+    rtc_settling = settle && can_wake && !rtc_probing;
 
     can_stop();
     led_off();
@@ -120,6 +162,10 @@ static void sleep_now(const char *reason)
     rtc_gpio_set_level(CAN_TX_GPIO, 1);
     rtc_gpio_hold_en(CAN_TX_GPIO);
 
+    if (rtc_settling || rtc_probing) {
+        esp_sleep_enable_timer_wakeup((rtc_probing ? PROBE_S : SETTLE_S) * 1000000ULL);
+        esp_deep_sleep_start();
+    }
     if (vsense) {
         esp_sleep_enable_timer_wakeup((uint64_t)CONFIG_OBD_SLEEP_CHECK_S * 1000000ULL);
     }
@@ -133,6 +179,20 @@ static void sleep_now(const char *reason)
     esp_deep_sleep_start();
 }
 
+// One OBD request (01 00) to the engine; the CAN node stays up if it answers.
+static bool ecu_answers()
+{
+    can_start();
+    static const uint8_t req[] = {0x01, 0x00};
+    uint8_t b[16];
+    vTaskDelay(pdMS_TO_TICKS(20));  // let the node join the bus
+    if (can_request(0x7E0, 0x7E8, req, sizeof(req), b, sizeof(b), 200) > 0) {
+        return true;
+    }
+    can_stop();
+    return false;
+}
+
 void power_early_check()
 {
     rtc_gpio_hold_dis(CAN_TX_GPIO);
@@ -141,13 +201,24 @@ void power_early_check()
     awake_since_us = esp_timer_get_time();
 
     uint32_t causes = esp_sleep_get_wakeup_causes();
+    if (causes && rtc_sleep_at_ms) {
+        slept_ms = clock_ms() - rtc_sleep_at_ms;
+    }
+    if ((causes & (1u << ESP_SLEEP_WAKEUP_TIMER)) && (rtc_settling || rtc_probing)) {
+        (rtc_probing ? rtc_probes : rtc_settles)++;
+        if (!ecu_answers()) {
+            enter_sleep(false);  // car still off: back to sleep (CAN wake armed after settling)
+        }
+        rtc_probe_until_ms = 0;
+        snprintf(why_awake, sizeof(why_awake), "ECU answered a %s check", rtc_probing ? "restart" : "settle");
+        return;
+    }
     if ((causes & (1u << ESP_SLEEP_WAKEUP_TIMER)) && rtc_vsense_ok) {
         rtc_checks++;
         float v = battery_volts();
         if (!std::isnan(v) && v < WAKE_VOLTS) {
             // Engine not running: straight back to sleep, no WiFi, ~0.3 s awake.
-            rtc_sleeps--;  // not a new sleep, just a check
-            sleep_now(rtc_last_reason);
+            enter_sleep(false);  // not a new sleep, just a check
         }
         snprintf(why_awake, sizeof(why_awake), "battery %.1f V (engine started)", v);
     } else if (causes & (1u << ESP_SLEEP_WAKEUP_EXT0)) {
@@ -188,7 +259,7 @@ static void power_task(void *)
     int64_t car_off_since = 0;
     bool answered = false;
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
         int64_t now = esp_timer_get_time();
         int64_t last_answer = logger_last_answer_us();
         if (last_answer > awake_since_us && !answered) {
@@ -206,7 +277,7 @@ static void power_task(void *)
 #if !CONFIG_OBD_SLEEP
         continue;
 #endif
-        if (!rtc_vsense_ok || power_hold.load() || ota_pending_verify()) {
+        if ((VSENSE_FITTED && !rtc_vsense_ok) || power_hold.load() || ota_pending_verify()) {
             continue;
         }
         if (now - awake_since_us < MIN_AWAKE_S * 1000000LL) {
@@ -232,6 +303,9 @@ static void power_task(void *)
             rtc_can_off_until = rtc_sleeps + NOISE_BACKOFF_SLEEPS;
             ESP_LOGW(TAG, "CAN wakes without an ECU answering; voltage-only wake for a while");
         }
+        if (answered) {
+            rtc_probe_until_ms = clock_ms() + RESTART_WINDOW_S * 1000LL;
+        }
         ESP_LOGI(TAG, "car off, sleeping (battery %.1f V)", v);
         sleep_now(uploads_done ? "car off, all uploaded" : wifi_up.load() ? "car off, uploads timed out" : "car off, no WiFi");
     }
@@ -251,10 +325,19 @@ void power_status(char *out, size_t len)
     } else {
         snprintf(volts, sizeof(volts), "%.2f V", v);
     }
+    // Pin at the ADC's ceiling: the divider's ground leg is missing or it's on the wrong pin
+    bool pegged = !std::isnan(v) && v > 3.05f * CONFIG_OBD_VBAT_RATIO_X1000 / 1000.0f;
     snprintf(out, len, "battery %s%s, awake for %lld s (%s), sleep %s; %lu sleeps, %lu voltage checks, %lu CAN wakes%s%s%s",
-             volts, rtc_vsense_ok ? "" : " (not yet confirmed against the ECU)",
+             volts, pegged ? " (pin at ADC max: check the divider's resistor to GND)"
+                    : rtc_vsense_ok || !VSENSE_FITTED ? "" : " (not yet confirmed against the ECU)",
              (long long)((esp_timer_get_time() - awake_since_us) / 1000000), why_awake,
-             !CONFIG_OBD_SLEEP ? "off" : rtc_vsense_ok ? "on" : "waiting for battery sense", (unsigned long)rtc_sleeps, (unsigned long)rtc_checks,
+             !CONFIG_OBD_SLEEP ? "off" : !VSENSE_FITTED ? "on (wakes on CAN activity only)"
+                                       : rtc_vsense_ok ? "on" : "waiting for battery sense", (unsigned long)rtc_sleeps, (unsigned long)rtc_checks,
              (unsigned long)rtc_can_wakes, rtc_sleeps < rtc_can_off_until ? " (CAN wake paused)" : "",
              rtc_last_reason[0] ? "; last: " : "", rtc_last_reason);
+    if (slept_ms >= 0) {
+        size_t n = strlen(out);
+        snprintf(out + n, len - n, ", last sleep %.1f s; %lu settles, %lu restart checks", slept_ms / 1000.0,
+                 (unsigned long)rtc_settles, (unsigned long)rtc_probes);
+    }
 }

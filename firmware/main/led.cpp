@@ -4,16 +4,33 @@
 //   yellow - on WiFi, trips waiting but the server isn't taking them
 //   green  - on WiFi and everything is uploaded
 // The LED is on GPIO48 (board v1.0) or GPIO38 (v1.1); both are driven.
+// The dashboard can switch it off for good (board in a closed case); that's
+// kept in NVS so it stays dark from power-on.
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led_strip.h"
+#include "nvs.h"
 
 #include "shared.h"
 
 std::atomic<bool> uploading{false};
 std::atomic<int> pending_trips{0};
 static std::atomic<bool> dark{false};
+static std::atomic<bool> enabled{true};
+
+void led_set_enabled(bool on)
+{
+    if (enabled.exchange(on) == on) {
+        return;
+    }
+    nvs_handle_t h;
+    if (nvs_open("led", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "on", on);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
 
 void led_off()
 {
@@ -42,7 +59,7 @@ static void led_task(void *)
     uint32_t last = 0xFFFFFFFF;
     while (true) {
         uint8_t r = 0, g = 0, b = 0;
-        if (dark.load()) {
+        if (dark.load() || !enabled.load()) {
         } else if (!wifi_up.load()) {
             r = BRIGHT;
         } else if (uploading.load()) {
@@ -69,5 +86,12 @@ static void led_task(void *)
 
 void led_start()
 {
+    nvs_handle_t h;
+    uint8_t on = 1;
+    if (nvs_open("led", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "on", &on);
+        nvs_close(h);
+    }
+    enabled.store(on);
     xTaskCreate(led_task, "led", 3072, nullptr, 2, nullptr);
 }

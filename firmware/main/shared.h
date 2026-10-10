@@ -80,6 +80,7 @@ static_assert(sizeof(Record) == 42, "record layout");
 extern std::atomic<bool> uploading;
 extern std::atomic<int> pending_trips;  // finished trips not yet on the server
 void led_start();
+void led_set_enabled(bool on);  // from the dashboard setting; saved in NVS
 
 // Set by the uploader when the dashboard asks for a full health scan, or to
 // clear fault codes (only carried out with the engine off).
