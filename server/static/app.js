@@ -403,7 +403,7 @@ function renderScanBtn(r) {
   b.textContent = !waiting ? "Scan now"
     : !r.sent_at ? "Sending to car…"
     : r.board_scan === "running" ? `Scanning ${r.scan_step || 0}/${r.scan_steps}…`
-    : r.board_scan === "queued" ? (r.moving ? "Queued: runs when stopped" : "Starting scan…")
+    : r.board_scan === "queued" ? "Starting scan…"
     : r.board_scan === "" ? "Uploading results…"
     : "Waiting for car…";
   b.classList.toggle("busy", waiting);

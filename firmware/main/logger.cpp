@@ -1065,18 +1065,21 @@ static void logger_task(void *)
         if (clear_requested.load()) {
             handle_clear_request(true);  // refused: never while the engine runs
         }
-        // "Scan now" with the engine running: only while stopped, since the
-        // scan pauses logging for a few seconds.
-        if (live.speed_kph == 0 && scan_requested.exchange(false)) {
+        // "Scan now" with the engine running, moving or not. The scan pauses
+        // polling for ~15 s; that gap's distance and fuel are filled in from
+        // the readings either side of it.
+        bool after_scan = false;
+        if (scan_requested.exchange(false)) {
             maybe_health_scan(true);
-            last_good_us = rpm_zero_since = last_fast_us = esp_timer_get_time();
+            last_good_us = rpm_zero_since = esp_timer_get_time();
+            after_scan = true;
         }
         // Fast group every loop: rpm, speed, abs load, lambda, fuel status, pedal
         uint16_t prev_speed = live.speed_kph;
         if (query(grp_fast) > 0) {
             now = esp_timer_get_time();
             float dt = (now - last_fast_us) / 1e6f;
-            if (dt < 2.0f) {
+            if (dt < 2.0f || (after_scan && dt < 60.0f)) {
                 integrate(dt, prev_speed);
             }
             last_fast_us = now;

@@ -48,6 +48,11 @@ tools/      vwprobe.py: read-only explorer for VW module data over /uds
   settings (for a closed case).
 - **Several cars**: each board reports its car's VIN; the dashboard keeps cars
   apart and shows a picker once there's more than one.
+- **iPod gauges**: an iPod classic running Rockbox, plugged into the board's
+  USB OTG port, shows full-screen gauges (boost, rpm, temps, AFR, ...), a live
+  list and the last scan's fault codes, and can start a scan, even on the move.
+  The Rockbox side is [OBDipodScanner](https://github.com/alsocat/OBDipodScanner);
+  turn on `OBD_IPOD_USB` here.
 
 ## Hardware
 
@@ -88,7 +93,13 @@ voltage the ECU reports. Each sleep starts with 5 s of timer-only "settling":
 entering deep sleep put a glitch on CAN RX that would otherwise wake it at once.
 
 Options live under `idf.py menuconfig` → *OBD WiFi Bridge* (sleep, battery
-sense pin and ratio, wake voltage, server host/port).
+sense pin and ratio, wake voltage, server host/port, iPod gauges).
+
+With `OBD_IPOD_USB` on, the board is a USB host on its OTG port and feeds an
+iPod running the OBDipodScanner plugin: a line of live values every 50 ms and
+the MIL and last scan's codes every 2 s; the iPod can ask for a scan. A
+DevKitC powers the iPod from that port as is; `OBD_USB_VBUS_GPIO` can drive a
+5 V switch so a forgotten iPod isn't charged while the board sleeps.
 
 ## Server
 
