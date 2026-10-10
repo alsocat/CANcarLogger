@@ -51,6 +51,13 @@ std::atomic<int> clear_requested{0};
 char clear_target[16], clear_dtc[8];
 static char clear_buf[96] = "";  // outcome of the last clear request, for the live view
 static char health_buf[96] = "no check yet";
+// Last health scan's codes for the iPod gauge: " module:code:flag ..." (flag A
+// active, P pending, S stored), kept in NVS so it survives sleep.
+static char dock_codes[400];
+static bool dock_have_codes;
+static int64_t dock_codes_us = -1;   // esp_timer time of a scan this boot
+static uint32_t dock_codes_epoch;    // wall clock of the stored scan, 0 = unknown
+static int dock_mil = -1;            // MIL from 01 01, -1 = unknown
 
 const char *health_note()
 {
@@ -452,10 +459,91 @@ static void append_hex(std::string &s, const uint8_t *b, int n)
     }
 }
 
+static void dock_add(std::string &out, const char *module, const char *code, char flag)
+{
+    char e[40];
+    snprintf(e, sizeof(e), " %s:%s:", module, code);
+    if (out.find(e) == std::string::npos && out.size() + strlen(e) + 1 < sizeof(dock_codes)) {
+        out += e;
+        out += flag;
+    }
+}
+
+static void dock_sae(char *out, uint8_t b0, uint8_t b1)
+{
+    snprintf(out, 8, "%c%d%X%X%X", "PCBU"[b0 >> 6], (b0 >> 4) & 3, b0 & 15, b1 >> 4, b1 & 15);
+}
+
+// UDS 59 02 reply: 4-byte records of DTC (3) + status
+static void dock_uds(std::string &out, const char *module, const uint8_t *b, int n)
+{
+    if (n < 3 || b[0] != 0x59) {
+        return;
+    }
+    for (int i = 3; i + 3 < n; i += 4) {
+        if (!b[i] && !b[i + 1] && !b[i + 2]) {
+            continue;
+        }
+        char code[8];
+        if (strcmp(module, "engine") == 0) {
+            dock_sae(code, b[i], b[i + 1]);
+        } else {
+            snprintf(code, sizeof(code), "%02X%02X%02X", b[i], b[i + 1], b[i + 2]);
+        }
+        uint8_t st = b[i + 3];
+        dock_add(out, module, code, st & 0x01 ? 'A' : st & 0x04 ? 'P' : 'S');
+    }
+}
+
+// OBD mode 03/07/0A reply: 43/47/4A, count, then 2-byte codes
+static void dock_obd(std::string &out, const char *module, const uint8_t *b, int n)
+{
+    if (n < 2 || (b[0] != 0x43 && b[0] != 0x47 && b[0] != 0x4A)) {
+        return;
+    }
+    for (int i = 2; i + 1 < n; i += 2) {
+        if (b[i] || b[i + 1]) {
+            char code[8];
+            dock_sae(code, b[i], b[i + 1]);
+            dock_add(out, module, code, b[0] == 0x47 ? 'P' : 'S');
+        }
+    }
+}
+
+static void dock_store(const std::string &codes)
+{
+    time_t now = time(nullptr);
+    xSemaphoreTake(live_lock, portMAX_DELAY);
+    snprintf(dock_codes, sizeof(dock_codes), "%s", codes.c_str());
+    dock_have_codes = true;
+    dock_codes_us = esp_timer_get_time();
+    dock_codes_epoch = now > 1700000000 ? now : 0;
+    xSemaphoreGive(live_lock);
+    nvs_handle_t h;
+    if (nvs_open("logger", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "dock_codes", codes.c_str());
+        nvs_set_u32(h, "dock_codes_t", dock_codes_epoch);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void dock_load()
+{
+    nvs_handle_t h;
+    if (nvs_open("logger", NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(dock_codes);
+        dock_have_codes = nvs_get_str(h, "dock_codes", dock_codes, &len) == ESP_OK;
+        nvs_get_u32(h, "dock_codes_t", &dock_codes_epoch);
+        nvs_close(h);
+    }
+}
+
 static void health_scan(const std::string &extra = "")
 {
     static uint8_t b[640];
     std::string js = "{\"modules\":[";
+    std::string dock;
     int64_t t0 = esp_timer_get_time();
     scan_step = 0;
     scan_steps = (is_vw ? sizeof(MODULES) / sizeof(MODULES[0]) + 6 : 2 * 3 + 8);
@@ -476,6 +564,7 @@ static void health_scan(const std::string &extra = "")
             for (const char *mode : modes) {
                 int n = uds(mode, b, sizeof(b), 2000, m.tx, m.rx);
                 scan_step++;
+                dock_obd(dock, m.name, b, n);
                 js += ",\"obd";
                 js += mode;
                 js += "\":\"";
@@ -491,6 +580,7 @@ static void health_scan(const std::string &extra = "")
         }
         int n = uds("19020D", b, sizeof(b), 3000, m.tx, m.rx);
         scan_step++;
+        dock_uds(dock, m.name, b, n);
         js += first ? "{" : ",{";
         first = false;
         js += "\"name\":\"";
@@ -506,6 +596,9 @@ static void health_scan(const std::string &extra = "")
     js += "],\"pid01\":\"";
     int n = uds("0101", b, sizeof(b));
     scan_step++;
+    if (n >= 3 && b[0] == 0x41 && b[1] == 0x01) {
+        dock_mil = b[2] >> 7;
+    }
     append_hex(js, b, n > 0 ? n : 0);
     js += "\",\"mode06\":[";
     // Misfire monitors: A1 = all cylinders, A2.. = cylinder 1.. (up to 6)
@@ -546,6 +639,7 @@ static void health_scan(const std::string &extra = "")
         rename(tmp, path);
         pending_trips.fetch_add(1);
     }
+    dock_store(dock);
     scan_steps = 0;
     ESP_LOGI(TAG, "health scan: %u bytes in %lld ms", (unsigned)js.size(),
              (long long)(esp_timer_get_time() - t0) / 1000);
@@ -653,6 +747,7 @@ static void maybe_health_scan(bool forced)
         int n = ecu("0101", b, sizeof(b));
         if (n >= 3 && b[0] == 0x41 && b[1] == 0x01) {
             mil = b[2];  // bit 7 = MIL on, low bits = DTC count
+            dock_mil = b[2] >> 7;
         }
     }
     uint32_t last_mil = nvs_get("scan_mil", 0xFFFFFFFF);
@@ -808,10 +903,36 @@ bool logger_dock_line(char *out, size_t len)
     Record r = live;
     xSemaphoreGive(live_lock);
     int baro = r.baro_kpa ? r.baro_kpa : 101;
-    // boost in tenths of psi: kPa * 1.45038
-    snprintf(out, len, "B=%d R=%u C=%d I=%d S=%u\n", ((int)r.map_kpa - baro) * 14504 / 1000,
-             r.rpm, r.coolant - 40, r.iat - 40, r.speed_kph);
+    // Units in the boost_gauge plugin's header: boost 0.1 psi (kPa * 1.45038),
+    // percentages 0.1 %, timing 0.1 deg, battery 0.01 V, lambda 0.001
+    snprintf(out, len,
+             "B=%d R=%u S=%u C=%d I=%d T=%d P=%d L=%d A=%d V=%u F=%d M=%d E=%d G=%d K=%d O=%d\n",
+             ((int)r.map_kpa - baro) * 14504 / 1000, r.rpm, r.speed_kph, r.coolant - 40, r.iat - 40,
+             r.throttle * 1000 / 255, r.pedal * 1000 / 255, r.load * 1000 / 255, r.timing * 5 - 640,
+             r.voltage_mv / 10, r.fuel_level * 1000 / 255, (int)((r.lambda * 2000LL) >> 16),
+             (r.stft - 128) * 1000 / 128, (r.ltft - 128) * 1000 / 128, r.cat_temp / 10 - 40, r.ambient - 40);
     return true;
+}
+
+void logger_dock_codes(char *out, size_t len)
+{
+    if (!live_lock) {
+        snprintf(out, len, "@D mil=-1 age=-1\n");
+        return;
+    }
+    xSemaphoreTake(live_lock, portMAX_DELAY);
+    long age = !dock_have_codes ? -1
+               : dock_codes_us >= 0 ? (long)((esp_timer_get_time() - dock_codes_us) / 1000000)
+               : (dock_codes_epoch && time(nullptr) > 1700000000) ? (long)(time(nullptr) - dock_codes_epoch)
+               : -2;  // from before this boot, time unknown
+    int k = snprintf(out, len, "@D mil=%d age=%ld", dock_mil, age);
+    if (scan_steps && k < (int)len) {
+        k += snprintf(out + k, len - k, " scan=%d/%d", scan_step.load(), scan_steps.load());
+    }
+    if (k < (int)len) {
+        snprintf(out + k, len - k, "%s\n", dock_codes);
+    }
+    xSemaphoreGive(live_lock);
 }
 
 bool logger_live_json(char *out, size_t len)
@@ -1010,6 +1131,7 @@ void logger_start()
     live_lock = xSemaphoreCreateMutex();
     trip_lock = xSemaphoreCreateMutex();
     g_boot_id = nvs_bump("boot_ctr");
+    dock_load();
     if (storage_init()) {
         finalize_leftovers();
         xTaskCreate(logger_task, "logger", 6144, nullptr, 4, nullptr);

@@ -112,6 +112,7 @@ void uploader_start();
 // Latest values as JSON for the live view; returns false if no fresh data.
 bool logger_live_json(char *out, size_t len);
 bool logger_dock_line(char *out, size_t len);  // one boost-gauge line, false if not fresh
+void logger_dock_codes(char *out, size_t len); // "@D ..." line: MIL, last scan's codes
 void dock_start();
 const char *logger_state();
 // The trip being recorded right now (flushed part only), so the uploader can

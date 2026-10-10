@@ -1,9 +1,11 @@
-// Boost gauge output for an iPod running Rockbox with the boost_gauge plugin,
-// plugged into the board's USB OTG port. The board is the USB host: while the
-// gauge is open, Rockbox shows up as a USB serial (CDC-ACM) device and gets one
-// text line every 50 ms, like "B=142 R=3450 C=90 I=35 S=88": boost in tenths
-// of psi, rpm, coolant C, intake air C, speed km/h. Nothing is sent while the
-// engine data isn't fresh. Plug and unplug whenever.
+// Car gauges on an iPod running Rockbox with the boost_gauge plugin, plugged
+// into the board's USB OTG port. The board is the USB host: while the gauges
+// are open, Rockbox shows up as a USB serial (CDC-ACM) device and gets
+//   - every 50 ms while the engine data is fresh, a line of live values
+//     ("B=142 R=3450 S=88 ..."; letters and units in the plugin's header)
+//   - every 2 s, "@D ..." with the MIL and the last health scan's codes
+// and the iPod sends "SCAN" to ask for a new health scan. Plug and unplug
+// whenever.
 //
 // The port only powers the iPod if its 5 V comes from the board: the DevKitC's
 // USB-OTG solder jumper, ideally through a switch on OBD_USB_VBUS_GPIO so the
@@ -35,6 +37,25 @@ static void usb_lib_task(void *)
     }
 }
 
+static bool on_rx(const uint8_t *data, size_t len, void *)
+{
+    static char buf[16];
+    static size_t n;
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\n' || data[i] == '\r') {
+            buf[n] = 0;
+            if (strcmp(buf, "SCAN") == 0) {
+                ESP_LOGI(TAG, "iPod asked for a health scan");
+                scan_requested.store(true);
+            }
+            n = 0;
+        } else if (n < sizeof(buf) - 1) {
+            buf[n++] = data[i];
+        }
+    }
+    return true;
+}
+
 static void on_event(const cdc_acm_host_dev_event_data_t *event, void *)
 {
     if (event->type == CDC_ACM_HOST_DEVICE_DISCONNECTED) {
@@ -47,12 +68,12 @@ static void dock_task(void *)
     const cdc_acm_host_device_config_t dev_cfg = {
         .connection_timeout_ms = 1000,
         .out_buffer_size = 256,
-        .in_buffer_size = 0,
+        .in_buffer_size = 64,
         .event_cb = on_event,
-        .data_cb = nullptr,
+        .data_cb = on_rx,
         .user_arg = nullptr,
     };
-    char line[64];
+    char line[160], codes[448];
     while (true) {
         // Waits up to a second for something to be plugged in. Rockbox's
         // serial interface is the first one while it's in charge-only mode.
@@ -63,10 +84,16 @@ static void dock_task(void *)
         ESP_LOGI(TAG, "iPod connected");
         gone = false;
         cdc_acm_host_set_control_line_state(dev, true, false);
-        while (!gone) {
+        for (int tick = 0; !gone; tick++) {
             if (logger_dock_line(line, sizeof(line)) &&
                 cdc_acm_host_data_tx_blocking(dev, (const uint8_t *)line, strlen(line), 200) != ESP_OK) {
                 break;
+            }
+            if (tick % 40 == 0) {
+                logger_dock_codes(codes, sizeof(codes));
+                if (cdc_acm_host_data_tx_blocking(dev, (const uint8_t *)codes, strlen(codes), 500) != ESP_OK) {
+                    break;
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
